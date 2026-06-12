@@ -1,0 +1,11 @@
+[package]
+name = "blacknode-cuda"
+version = "0.1.0"
+description = "Real GPU compute nodes: CUDA kernel lab, custom NVRTC kernels, GPU image filters, Tensor Core GEMM, and CUTLASS."
+requires-blacknode = ">=0.1.0"
+
+[categories]
+"NVIDIA GPU" = "#76b900"
+
+[dependencies]
+pip = ["cupy-cuda12x>=13", "numpy>=1.24", "pillow>=10"]

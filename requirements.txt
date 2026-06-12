@@ -1,0 +1,5 @@
+# Requires an NVIDIA GPU + CUDA 12.x driver. Without them the nodes still load
+# and return structured errors instead of raising.
+cupy-cuda12x>=13
+numpy>=1.24
+pillow>=10
