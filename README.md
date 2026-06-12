@@ -32,3 +32,9 @@ appear under the **NVIDIA GPU** category.
 Requires an NVIDIA GPU with a CUDA 12.x driver for actual compute. Without a
 GPU the nodes load fine and return structured errors, so workflows stay
 editable anywhere.
+
+## Tests
+
+The suite in `tests/` runs automatically when you run `pytest` from the
+Blacknode repo root (the core collects `packages/*/tests/`). GPU-dependent
+tests skip cleanly on machines without CuPy or an NVIDIA GPU.
