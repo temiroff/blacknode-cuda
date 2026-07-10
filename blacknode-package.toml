@@ -9,3 +9,4 @@ requires-blacknode = ">=0.1.0"
 
 [dependencies]
 pip = ["cupy-cuda12x>=13", "numpy>=1.24", "pillow>=10"]
+imports = ["numpy", "PIL", "cupy"]
