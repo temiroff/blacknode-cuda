@@ -1,0 +1,190 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "CUDA Image Filter Livestream",
+  "saved_at": "2026-07-12T00:00:00",
+  "entrypoint": {
+    "node_id": "image_out",
+    "port": "image"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Start a ROS 2 camera MJPEG stream, then run a real GPU (CUDA) filter continuously on every frame through a dedicated background process, and preview the live filtered video. This is the video-streaming path, not the graph's cook-once model: press Run once to start both streams, and the preview keeps updating on its own -- no repeated re-cooking needed. Set CUDAImageFilterStream action=stop and cook it to stop the filtered stream (this does not stop the underlying camera stream).",
+    "color": "#76b900",
+    "required_packages": ["blacknode-ros2", "blacknode-cuda"]
+  },
+  "node_meta": {
+    "check": {
+      "id": "check",
+      "type": "ROS2SystemCheck",
+      "params": {"refresh": true},
+      "pos": [40, 220],
+      "inputs": ["refresh"],
+      "outputs": ["available", "backend", "report"],
+      "input_types": {"refresh": "Bool"},
+      "output_types": {"available": "Bool", "backend": "Text", "report": "Text"},
+      "input_defaults": {"refresh": true}
+    },
+    "stream": {
+      "id": "stream",
+      "type": "ROS2ImageStream",
+      "params": {
+        "action": "start",
+        "stream_id": "camera",
+        "topic": "/camera/image_raw",
+        "message_type": "auto",
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 10.0,
+        "max_width": 960,
+        "jpeg_quality": 80
+      },
+      "pos": [400, 100],
+      "inputs": [
+        "trigger",
+        "action",
+        "stream_id",
+        "topic",
+        "message_type",
+        "host",
+        "port",
+        "max_fps",
+        "max_width",
+        "jpeg_quality"
+      ],
+      "outputs": ["preview", "streaming", "stream_url", "snapshot_url", "stream_id", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "stream_id": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "host": "Text",
+        "port": "Int",
+        "max_fps": "Float",
+        "max_width": "Int",
+        "jpeg_quality": "Int"
+      },
+      "output_types": {
+        "preview": "Image",
+        "streaming": "Bool",
+        "stream_url": "Text",
+        "snapshot_url": "Text",
+        "stream_id": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "stream_id": "camera",
+        "topic": "/camera/image_raw",
+        "message_type": "auto",
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 10.0,
+        "max_width": 960,
+        "jpeg_quality": 80
+      },
+      "input_choices": {
+        "action": ["start", "stop"],
+        "message_type": ["auto", "raw", "compressed"]
+      }
+    },
+    "filter_stream": {
+      "id": "filter_stream",
+      "type": "CUDAImageFilterStream",
+      "params": {
+        "action": "start",
+        "stream_id": "cuda_filter",
+        "source_url": "",
+        "op": "sobel_edges",
+        "amount": 1.0,
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 10.0,
+        "max_width": 960,
+        "jpeg_quality": 82
+      },
+      "pos": [840, 220],
+      "inputs": [
+        "trigger",
+        "action",
+        "stream_id",
+        "source_url",
+        "op",
+        "amount",
+        "host",
+        "port",
+        "max_fps",
+        "max_width",
+        "jpeg_quality"
+      ],
+      "outputs": ["preview", "streaming", "stream_url", "snapshot_url", "stream_id", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "stream_id": "Text",
+        "source_url": "Text",
+        "op": "Text",
+        "amount": "Float",
+        "host": "Text",
+        "port": "Int",
+        "max_fps": "Float",
+        "max_width": "Int",
+        "jpeg_quality": "Int"
+      },
+      "output_types": {
+        "preview": "Image",
+        "streaming": "Bool",
+        "stream_url": "Text",
+        "snapshot_url": "Text",
+        "stream_id": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "stream_id": "cuda_filter",
+        "source_url": "",
+        "op": "sobel_edges",
+        "amount": 1.0,
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 10.0,
+        "max_width": 960,
+        "jpeg_quality": 82
+      },
+      "input_choices": {
+        "action": ["start", "stop"],
+        "op": ["grayscale", "invert", "brighten", "threshold", "gaussian_blur", "sharpen", "sobel_edges"]
+      }
+    },
+    "image_out": {
+      "id": "image_out",
+      "type": "OutputImage",
+      "params": {},
+      "pos": [1280, 220],
+      "inputs": ["image"],
+      "outputs": ["image"],
+      "input_types": {"image": "Image"},
+      "output_types": {"image": "Image"},
+      "input_defaults": {}
+    },
+    "report_out": {
+      "id": "report_out",
+      "type": "Output",
+      "params": {"label": "CUDA filter livestream report"},
+      "pos": [1280, 40],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {"from": "check", "from_port": "report", "to": "stream", "to_port": "trigger"},
+    {"from": "stream", "from_port": "snapshot_url", "to": "filter_stream", "to_port": "source_url"},
+    {"from": "stream", "from_port": "report", "to": "filter_stream", "to_port": "trigger"},
+    {"from": "filter_stream", "from_port": "preview", "to": "image_out", "to_port": "image"},
+    {"from": "filter_stream", "from_port": "report", "to": "report_out", "to_port": "value"}
+  ]
+}

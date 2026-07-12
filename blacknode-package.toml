@@ -8,5 +8,5 @@ requires-blacknode = ">=0.1.0"
 "NVIDIA GPU" = "#76b900"
 
 [dependencies]
-pip = ["cupy-cuda12x>=13", "numpy>=1.24", "pillow>=10"]
-imports = ["numpy", "PIL", "cupy"]
+pip = ["cupy-cuda12x[ctk]>=13", "numpy>=1.24", "pillow>=10", "opencv-python>=4.8"]
+imports = ["numpy", "PIL", "cupy", "cv2"]

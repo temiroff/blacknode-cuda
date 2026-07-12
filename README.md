@@ -49,7 +49,8 @@ the example workflows show up in the Templates tab.
 |---|---|
 | `CUDAKernelLab` | Curated GPU ops (vector add, saxpy, matmul, softmax, FFT, mandelbrot, monte-carlo π, ...) with measured GPU vs CPU timings and a NumPy correctness check |
 | `CUDACustomKernel` | Write your own CUDA C kernel in the node, compiled at runtime with NVRTC (`cupy.RawKernel`) — includes starter templates |
-| `CUDAImageFilter` | GPU image filters (grayscale, gaussian blur, sobel edges, invert, ...) wired to Blacknode's image ports |
+| `CUDAImageFilter` | GPU image filters (grayscale, gaussian blur, sobel edges, invert, ...) wired to Blacknode's image ports — one call, one filtered image |
+| `CUDAImageFilterStream` | The same filters running continuously as a live video feed — start/stop a background process that reads an upstream MJPEG source and re-serves its own GPU-filtered stream |
 | `TensorCoreGEMM` | WMMA Tensor Core half-precision matrix multiply via NVRTC |
 | `CUTLASS` / `CUTLASSGemm` | CUTLASS GEMM running through Blacknode's sandboxed worker |
 | `GPUCapability` | Detect the local GPU: name, compute capability, memory, driver |
@@ -61,8 +62,45 @@ Ready-made workflows in `templates/`, loadable from the editor's Templates tab:
 
 - **NVIDIA CUDA Lab** — run and benchmark the curated op catalogue
 - **GPU Image Filter** — load an image, filter it on the GPU, view the result
+- **CUDA Image Filter Livestream** — start a ROS 2 camera MJPEG stream, run a
+  GPU filter continuously on every frame, and watch the live filtered preview
+  update on its own (see **Live video vs. one-shot filtering** below)
 - **CUTLASS GPU Burn** — sustained CUTLASS GEMM benchmark
 - **CUTLASS Image Showcase** — convolution path on real images
+
+## Live video vs. one-shot filtering
+
+`CUDAImageFilter` is a pure function: one cook, one image in, one filtered
+image out. Wiring it after a live camera source and repeatedly re-cooking it
+(even with Blacknode's live-recook mode) is not real video — every recook
+walks the whole upstream graph again, which is far slower than actual frame
+rate.
+
+`CUDAImageFilterStream` is the real video path, matching how
+`ROS2ImageStream`/`CV2ColorObjectStream` already work: cook it **once** with
+`action=start` and it launches a dedicated background process
+(`scripts/cuda_filter_stream_server.py`) that polls an upstream snapshot URL
+(e.g. `ROS2ImageStream`'s `snapshot_url` output) in a tight loop, filters
+each frame on the GPU, and serves its own live MJPEG stream. Wire its
+`preview` output into `OutputImage` and the canvas updates live with zero
+further cooking. Cook it again with `action=stop` (or a different
+`stream_id`) to stop it — this only stops the filter relay, not the
+underlying camera stream.
+
+Changing `op`, `amount`, `source_url`, `max_fps`, `max_width`, or
+`jpeg_quality` on an already-running filter stream (e.g. picking a different
+filter from the editor's dropdown) also takes effect on the next cook without
+restarting the process: `start_filter_stream` detects the stream is already
+running for that `stream_id` and PATCHes its `/config.json` over HTTP instead
+of killing and respawning it. This matters beyond convenience — a naive
+restart-on-every-cook also meant any *unrelated* downstream node's Run
+would restart this node's whole upstream chain (the graph engine always
+re-walks every ancestor on a cook), churning the camera/tracker connections
+too. The live-patch path makes that re-walk a cheap no-op instead.
+
+No GPU? The background process still starts and serves its stream endpoints;
+`/health.json` reports a structured "CUDA not available" error per frame
+instead of crashing, matching the rest of this package's no-GPU contract.
 
 ## Updating / removing
 

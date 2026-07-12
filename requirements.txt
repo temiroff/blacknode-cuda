@@ -1,5 +1,8 @@
 # Requires an NVIDIA GPU + CUDA 12.x driver. Without them the nodes still load
 # and return structured errors instead of raising.
-cupy-cuda12x>=13
+cupy-cuda12x[ctk]>=13
 numpy>=1.24
 pillow>=10
+# CUDAImageFilterStream's background relay (scripts/cuda_filter_stream_server.py)
+# uses OpenCV to decode/encode MJPEG frames, same as blacknode-vision's stream servers.
+opencv-python>=4.8

@@ -24,7 +24,9 @@ except Exception:  # pragma: no cover - keeps the package importable on minimal 
     np = None
 
 from blacknode.node import Any as AnyPort
-from blacknode.node import Enum, Float, Image, Int, Text, node
+from blacknode.node import Bool, Enum, Float, Image, Int, Text, node
+
+from . import cuda_stream_runtime as stream_rt
 
 # ---------------------------------------------------------------------------
 # Op catalogue (drives the dropdown and validation)
@@ -1395,6 +1397,89 @@ def cuda_image_filter(ctx: dict) -> dict:
 
 def _img_error(message: str) -> dict:
     return {"image": "", "gpu_ms": 0.0, "device": "", "report": {"error": message}}
+
+
+# ---------------------------------------------------------------------------
+# GPU image filter, streaming version — a dedicated background process reads
+# an upstream MJPEG source's snapshot.jpg, filters each frame on the GPU, and
+# re-serves its own live MJPEG stream. This is the "video, not button
+# re-cooking" path: the graph is only touched once (to start the helper
+# process), not once per frame, mirroring ROS2ImageStream /
+# CV2ColorObjectStream in packages/blacknode-ros2 and packages/blacknode-vision.
+# ---------------------------------------------------------------------------
+
+@node(
+    name="CUDAImageFilterStream",
+    category="NVIDIA GPU",
+    description="Start or stop a live GPU-filtered MJPEG stream reading from an upstream snapshot URL (e.g. ROS2ImageStream's snapshot_url).",
+    inputs={
+        "trigger": AnyPort,
+        "action": Enum(["start", "stop"], default="start"),
+        "stream_id": Text(default="cuda_filter"),
+        "source_url": Text(default=""),
+        "op": Enum(IMAGE_FILTERS, default="grayscale"),
+        "amount": Float(default=1.0),
+        "host": Text(default="127.0.0.1"),
+        "port": Int(default=0),
+        "max_fps": Float(default=10.0),
+        "max_width": Int(default=960),
+        "jpeg_quality": Int(default=82),
+    },
+    outputs={
+        "preview": Image,
+        "streaming": Bool,
+        "stream_url": Text,
+        "snapshot_url": Text,
+        "stream_id": Text,
+        "report": Text,
+    },
+)
+def cuda_image_filter_stream(ctx: dict) -> dict:
+    stream_id = str(ctx.get("stream_id") or "cuda_filter").strip() or "cuda_filter"
+    action = str(ctx.get("action") or "start").strip().lower()
+    if action == "stop":
+        result = stream_rt.stop_filter_stream(stream_id)
+        return {
+            "preview": "", "streaming": False, "stream_url": "", "snapshot_url": "",
+            "stream_id": stream_id,
+            "report": f"stopped {result.get('stopped', 0)} CUDA filter stream(s)",
+        }
+
+    source_url = str(ctx.get("source_url") or "").strip()
+    op = str(ctx.get("op") or "grayscale").strip()
+    if op not in IMAGE_FILTERS:
+        return {
+            "preview": "", "streaming": False, "stream_url": "", "snapshot_url": "",
+            "stream_id": stream_id,
+            "report": f"CUDA filter stream FAILED: unknown filter '{op}'; choose one of {IMAGE_FILTERS}",
+        }
+    amount = float(ctx.get("amount") or 1.0)
+    host = str(ctx.get("host") or "127.0.0.1").strip() or "127.0.0.1"
+    port = max(0, int(ctx.get("port") or 0))
+    max_fps = max(0.1, min(60.0, float(ctx.get("max_fps") or 10.0)))
+    max_width = max(0, int(ctx.get("max_width") or 960))
+    jpeg_quality = max(1, min(100, int(ctx.get("jpeg_quality") or 82)))
+
+    result = stream_rt.start_filter_stream(
+        stream_id=stream_id, source_url=source_url, op=op, amount=amount,
+        host=host, port=port, max_fps=max_fps, max_width=max_width, jpeg_quality=jpeg_quality,
+    )
+    if not result.get("ok"):
+        return {
+            "preview": "", "streaming": False, "stream_url": "", "snapshot_url": "",
+            "stream_id": stream_id,
+            "report": f"CUDA filter stream FAILED: {result.get('error', 'unknown error')}",
+        }
+    stream_url = str(result["stream_url"])
+    snapshot_url = str(result["snapshot_url"])
+    return {
+        "preview": stream_url,
+        "streaming": True,
+        "stream_url": stream_url,
+        "snapshot_url": snapshot_url,
+        "stream_id": stream_id,
+        "report": f"LIVE GPU FILTER STREAM running on {stream_url} from {source_url} ({op}, {max_fps:g} FPS max)",
+    }
 
 
 # ---------------------------------------------------------------------------
