@@ -1410,6 +1410,7 @@ def _img_error(message: str) -> dict:
 
 @node(
     name="CUDAImageFilterStream",
+    live=True,
     category="NVIDIA GPU",
     description="Start or stop a live GPU-filtered MJPEG stream reading from an upstream snapshot URL (e.g. ROS2ImageStream's snapshot_url).",
     inputs={
