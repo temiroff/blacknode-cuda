@@ -111,6 +111,10 @@ rm -rf packages/blacknode-cuda             # remove — base Blacknode keeps wor
 
 ## Development
 
+Coding agents should read [`AGENTS.md`](AGENTS.md) before changing this package.
+It defines the package boundary, GPU fallback contract, benchmark requirements,
+and verification commands.
+
 After loading, the modules are importable through Blacknode's stable package
 alias:
 
