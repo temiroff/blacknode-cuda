@@ -2,8 +2,8 @@
 
 **Real GPU compute nodes for [Blacknode](https://github.com/temiroff/Blacknode).**
 
-This is a Blacknode **extension package** — it does not run on its own. It
-plugs CUDA compute blocks into the Blacknode visual workflow editor: kernels
+Install this Blacknode **extension package** to add CUDA compute blocks to the
+visual workflow editor: kernels
 compile and execute on your local NVIDIA GPU and report measured timings,
 CPU baselines, speedups, and correctness checks.
 

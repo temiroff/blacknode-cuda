@@ -34,3 +34,9 @@ validate any changed package template with `blacknode validate`.
 
 See the Blacknode `docs/packages.md` and `blacknode-development` skill for the
 shared package contract.
+
+## Documentation voice
+
+Describe this package through its Blacknode nodes, GPU workflows, measured
+outputs, and requirements. Mention external technology names only when they are
+implemented dependencies or supported interfaces; avoid product comparisons.
