@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """HTTP MJPEG server that applies a CUDA (CuPy) image filter to a snapshot URL.
 
-Mirrors packages/blacknode-vision/scripts/cv2_color_stream_server.py's shape
+Mirrors packages/blacknode-perception/scripts/cv2_color_stream_server.py's shape
 (poll an upstream --source-url, process each frame, re-serve as its own
 /stream.mjpg) but the "process" step is a real GPU filter instead of CV2
 color tracking. This is what makes CUDAImageFilterStream a genuine live

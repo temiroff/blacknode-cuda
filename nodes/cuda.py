@@ -1405,7 +1405,7 @@ def _img_error(message: str) -> dict:
 # re-serves its own live MJPEG stream. This is the "video, not button
 # re-cooking" path: the graph is only touched once (to start the helper
 # process), not once per frame, mirroring ROS2ImageStream /
-# CV2ColorObjectStream in packages/blacknode-ros2 and packages/blacknode-vision.
+# CV2ColorObjectStream in packages/blacknode-ros2 and packages/blacknode-perception.
 # ---------------------------------------------------------------------------
 
 @node(
