@@ -23,8 +23,9 @@ try:  # NumPy is only used once CuPy (which depends on it) is confirmed present.
 except Exception:  # pragma: no cover - keeps the package importable on minimal installs
     np = None
 
+from blacknode import streams as bn_streams
 from blacknode.node import Any as AnyPort
-from blacknode.node import Bool, Enum, Float, Image, Int, Text, node
+from blacknode.node import Bool, Dict, Enum, Float, Image, Int, Text, node
 
 from . import cuda_stream_runtime as stream_rt
 
@@ -1414,6 +1415,7 @@ def _img_error(message: str) -> dict:
     category="NVIDIA CUDA",
     description="Start or stop a live GPU-filtered MJPEG stream reading from an upstream snapshot URL (e.g. CameraROS2Subscribe's snapshot_url).",
     inputs={
+        "frame_stream": Dict(default={}),
         "trigger": AnyPort,
         "action": Enum(["start", "stop"], default="start"),
         "stream_id": Text(default="cuda_filter"),
@@ -1427,6 +1429,7 @@ def _img_error(message: str) -> dict:
         "jpeg_quality": Int(default=82),
     },
     outputs={
+        "frame_stream": Dict,
         "preview": Image,
         "streaming": Bool,
         "stream_url": Text,
@@ -1446,7 +1449,7 @@ def cuda_image_filter_stream(ctx: dict) -> dict:
             "report": f"stopped {result.get('stopped', 0)} CUDA filter stream(s)",
         }
 
-    source_url = str(ctx.get("source_url") or "").strip()
+    source_url = bn_streams.source_url(ctx.get("frame_stream"), str(ctx.get("source_url") or ""))
     op = str(ctx.get("op") or "grayscale").strip()
     if op not in IMAGE_FILTERS:
         return {
