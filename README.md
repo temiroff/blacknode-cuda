@@ -77,10 +77,10 @@ walks the whole upstream graph again, which is far slower than actual frame
 rate.
 
 `CUDAImageFilterStream` is the real video path, matching how
-`ROS2ImageStream`/`CV2ColorObjectStream` already work: cook it **once** with
+`CameraROS2Subscribe`/`CV2ColorObjectStream` already work: cook it **once** with
 `action=start` and it launches a dedicated background process
 (`scripts/cuda_filter_stream_server.py`) that polls an upstream snapshot URL
-(e.g. `ROS2ImageStream`'s `snapshot_url` output) in a tight loop, filters
+(e.g. `CameraROS2Subscribe`'s `snapshot_url` output) in a tight loop, filters
 each frame on the GPU, and serves its own live MJPEG stream. Wire its
 `preview` output into `OutputImage` and the canvas updates live with zero
 further cooking. Cook it again with `action=stop` (or a different

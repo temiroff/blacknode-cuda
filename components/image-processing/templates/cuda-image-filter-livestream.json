@@ -27,7 +27,7 @@
     },
     "stream": {
       "id": "stream",
-      "type": "ROS2ImageStream",
+      "type": "CameraROS2Subscribe",
       "params": {
         "action": "start",
         "stream_id": "camera",
