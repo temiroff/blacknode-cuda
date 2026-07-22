@@ -22,18 +22,21 @@ capabilities = ["compute.cuda.capability"]
 description = "CUDA kernel lab and custom NVRTC-compiled kernels."
 default = true
 capabilities = ["compute.cuda.kernels"]
+templates = ["components/kernels/templates"]
 
 # Roadmap component; sources land in components/image-processing/nodes.
 [components.image-processing]
 description = "GPU image filters and streaming filter servers."
 default = true
 capabilities = ["compute.cuda.image"]
+templates = ["components/image-processing/templates"]
 
 # Roadmap component; sources land in components/tensor-operations/nodes.
 [components.tensor-operations]
 description = "Tensor Core GEMM and CUTLASS matrix operations."
 default = true
 capabilities = ["compute.cuda.tensor"]
+templates = ["components/tensor-operations/templates"]
 
 # Roadmap component; sources land in components/benchmarks/nodes.
 [components.benchmarks]

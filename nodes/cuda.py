@@ -1605,7 +1605,7 @@ def _tc_error(message: str, device: str = "") -> dict:
 @node(
     inputs={"size": Int(default=512), "seed": Int(default=0)},
     outputs=["result:Any", "gpu_ms:Float", "tflops:Float", "cublas_ms:Float", "device:Text", "report:Dict"],
-    name="CUTLASSGemm", component="tensor-operations",
+    name="CUTLASSGemm", component="benchmarks",
     category="NVIDIA CUDA",
     description="CUTLASS (NVIDIA library) fp16 GEMM run in a Docker GPU worker, with TFLOPS and a cuBLAS comparison.",
 )
