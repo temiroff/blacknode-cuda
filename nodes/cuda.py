@@ -1429,13 +1429,13 @@ def _img_error(message: str) -> dict:
         "jpeg_quality": Int(default=82),
     },
     outputs={
-        "frame_stream": Dict,
         "preview": Image,
         "streaming": Bool,
         "stream_url": Text,
         "snapshot_url": Text,
         "stream_id": Text,
         "report": Text,
+        "frame_stream": Dict,
     },
 )
 def cuda_image_filter_stream(ctx: dict) -> dict:
