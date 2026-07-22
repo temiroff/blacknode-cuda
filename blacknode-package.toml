@@ -3,6 +3,7 @@ name = "blacknode-cuda"
 version = "0.1.0"
 description = "Real GPU compute nodes: CUDA kernel lab, custom NVRTC kernels, GPU image filters, Tensor Core GEMM, and CUTLASS."
 requires-blacknode = ">=0.1.0"
+layer = "compute"
 
 [categories]
 "NVIDIA CUDA" = "#76b900"
@@ -18,6 +19,10 @@ default = true
 capabilities = ["compute.cuda.capability"]
 
 # Roadmap component; sources land in components/kernels/nodes.
+node-types = [
+  "GPUCapability", "GPURequirement"
+]
+
 [components.kernels]
 description = "CUDA kernel lab and custom NVRTC-compiled kernels."
 default = true
@@ -25,6 +30,10 @@ capabilities = ["compute.cuda.kernels"]
 templates = ["components/kernels/templates"]
 
 # Roadmap component; sources land in components/image-processing/nodes.
+node-types = [
+  "CUDACustomKernel", "CUDAKernelLab"
+]
+
 [components.image-processing]
 description = "GPU image filters and streaming filter servers."
 default = true
@@ -32,6 +41,10 @@ capabilities = ["compute.cuda.image"]
 templates = ["components/image-processing/templates"]
 
 # Roadmap component; sources land in components/tensor-operations/nodes.
+node-types = [
+  "CUDAImageFilter", "CUDAImageFilterStream"
+]
+
 [components.tensor-operations]
 description = "Tensor Core GEMM and CUTLASS matrix operations."
 default = true
@@ -39,7 +52,14 @@ capabilities = ["compute.cuda.tensor"]
 templates = ["components/tensor-operations/templates"]
 
 # Roadmap component; sources land in components/benchmarks/nodes.
+node-types = [
+  "CUTLASS", "TensorCoreGEMM"
+]
+
 [components.benchmarks]
 description = "Sustained throughput and speedup benchmarking harnesses."
 default = true
 capabilities = ["compute.cuda.benchmarks"]
+node-types = [
+  "CUTLASSGemm"
+]
