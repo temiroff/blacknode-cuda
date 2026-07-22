@@ -11,7 +11,7 @@
     "template": true,
     "description": "Start a ROS 2 camera MJPEG stream, then run a real GPU (CUDA) filter continuously on every frame through a dedicated background process, and preview the live filtered video. This is the video-streaming path, not the graph's cook-once model: press Run once to start both streams, and the preview keeps updating on its own -- no repeated re-cooking needed. Set CUDAImageFilterStream action=stop and cook it to stop the filtered stream (this does not stop the underlying camera stream).",
     "color": "#76b900",
-    "required_packages": ["blacknode-ros2", "blacknode-cuda"]
+    "required_packages": ["blacknode-ros2", "blacknode-cuda", "blacknode-perception"]
   },
   "node_meta": {
     "check": {

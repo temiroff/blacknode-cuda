@@ -334,8 +334,8 @@ def _max_diff(gpu_host, cpu) -> float:
         "seed": Int(default=0),
     },
     outputs=["result:Any", "gpu_ms:Float", "cpu_ms:Float", "speedup:Float", "device:Text", "report:Dict"],
-    name="CUDAKernelLab",
-    category="NVIDIA GPU",
+    name="CUDAKernelLab", component="kernels",
+    category="NVIDIA CUDA",
     description="Run a real CUDA/GPU op on the local NVIDIA GPU and measure it against a NumPy baseline.",
 )
 def cuda_kernel_lab(ctx: dict) -> dict:
@@ -943,8 +943,8 @@ def _custom_launch_mode(
         "output_mode": Enum(CUSTOM_OUTPUT_MODES, default="auto"),
     },
     outputs=["output:Any", "result:Dict", "gpu_ms:Float", "device:Text", "report:Dict"],
-    name="CUDACustomKernel",
-    category="NVIDIA GPU",
+    name="CUDACustomKernel", component="kernels",
+    category="NVIDIA CUDA",
     description="Compile and run your own CUDA C kernel on optional Any input data. Images round-trip as Image-compatible data URLs.",
 )
 def cuda_custom_kernel(ctx: dict) -> dict:
@@ -1232,8 +1232,8 @@ def _gpu_capability_from_smi() -> dict | None:
     inputs=[],
     outputs=["available:Bool", "name:Text", "compute_capability:Text",
              "vram_total_gb:Float", "vram_free_gb:Float", "cuda_version:Text", "report:Dict"],
-    name="GPUCapability",
-    category="NVIDIA GPU",
+    name="GPUCapability", component="capability",
+    category="NVIDIA CUDA",
     description="Detect the local NVIDIA GPU's name, compute capability, VRAM, and CUDA version.",
 )
 def gpu_capability(ctx: dict) -> dict:
@@ -1252,8 +1252,8 @@ def gpu_capability(ctx: dict) -> dict:
 @node(
     inputs={"min_compute": Float(default=8.0), "min_vram_gb": Float(default=8.0)},
     outputs=["ok:Bool", "reason:Text", "report:Dict"],
-    name="GPURequirement",
-    category="NVIDIA GPU",
+    name="GPURequirement", component="capability",
+    category="NVIDIA CUDA",
     description="Preflight gate: passes only if the local GPU meets a minimum compute capability and VRAM.",
 )
 def gpu_requirement(ctx: dict) -> dict:
@@ -1339,8 +1339,8 @@ def _apply_image_filter(cp, op: str, g, amount: float):
 @node(
     inputs={"image": Image, "op": Enum(IMAGE_FILTERS, default="grayscale"), "amount": Float(default=1.0)},
     outputs=["image:Image", "gpu_ms:Float", "device:Text", "report:Dict"],
-    name="CUDAImageFilter",
-    category="NVIDIA GPU",
+    name="CUDAImageFilter", component="image-processing",
+    category="NVIDIA CUDA",
     description="Apply a GPU (CUDA) image filter to an image and return the filtered image.",
 )
 def cuda_image_filter(ctx: dict) -> dict:
@@ -1409,9 +1409,9 @@ def _img_error(message: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @node(
-    name="CUDAImageFilterStream",
+    name="CUDAImageFilterStream", component="image-processing",
     live=True,
-    category="NVIDIA GPU",
+    category="NVIDIA CUDA",
     description="Start or stop a live GPU-filtered MJPEG stream reading from an upstream snapshot URL (e.g. ROS2ImageStream's snapshot_url).",
     inputs={
         "trigger": AnyPort,
@@ -1528,8 +1528,8 @@ def _wmma_kernel():
 @node(
     inputs={"size": Int(default=1024), "seed": Int(default=0)},
     outputs=["result:Any", "gpu_ms:Float", "tflops:Float", "cublas_ms:Float", "device:Text", "report:Dict"],
-    name="TensorCoreGEMM",
-    category="NVIDIA GPU",
+    name="TensorCoreGEMM", component="tensor-operations",
+    category="NVIDIA CUDA",
     description="Hand-written Tensor Core (WMMA, fp16) matrix multiply via NVRTC, with TFLOPS and a cuBLAS comparison.",
 )
 def tensor_core_gemm(ctx: dict) -> dict:
@@ -1605,8 +1605,8 @@ def _tc_error(message: str, device: str = "") -> dict:
 @node(
     inputs={"size": Int(default=512), "seed": Int(default=0)},
     outputs=["result:Any", "gpu_ms:Float", "tflops:Float", "cublas_ms:Float", "device:Text", "report:Dict"],
-    name="CUTLASSGemm",
-    category="NVIDIA GPU",
+    name="CUTLASSGemm", component="tensor-operations",
+    category="NVIDIA CUDA",
     description="CUTLASS (NVIDIA library) fp16 GEMM run in a Docker GPU worker, with TFLOPS and a cuBLAS comparison.",
 )
 def cutlass_gemm(ctx: dict) -> dict:
@@ -1700,8 +1700,8 @@ def _cutlass_route(value: Any) -> str:
         "seed": Int(default=0),
     },
     outputs=["output:Any", "result:Dict", "gpu_ms:Float", "tflops:Float", "device:Text", "report:Dict"],
-    name="CUTLASS",
-    category="NVIDIA GPU",
+    name="CUTLASS", component="tensor-operations",
+    category="NVIDIA CUDA",
     description="Generic CUTLASS GEMM block: image in -> convolution (im2col GEMM) out; "
                 "two matrices in -> A.B out; nothing in -> synthetic benchmark. "
                 "iterations stacks the conv (deep); filters>1 runs a random conv layer (CNN forward pass) "

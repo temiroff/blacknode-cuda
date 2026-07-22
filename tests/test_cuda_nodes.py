@@ -323,7 +323,7 @@ def test_cutlass_gemm_registered_and_matches_tensor_core_ports():
     tc = _NODE_REGISTRY["TensorCoreGEMM"]
     # Drop-in comparable: same output ports as the WMMA node.
     assert getattr(fn, "_bn_outputs") == getattr(tc, "_bn_outputs")
-    assert getattr(fn, "_bn_category") == "NVIDIA GPU"
+    assert getattr(fn, "_bn_category") == "NVIDIA CUDA"
 
 
 def test_cutlass_gemm_never_raises_without_docker(monkeypatch):
@@ -363,7 +363,7 @@ def test_generic_cutlass_node_declares_any_in_and_out():
     fn = _NODE_REGISTRY["CUTLASS"]
     assert getattr(fn, "_bn_input_types")["input"] == "Any"
     assert getattr(fn, "_bn_output_types")["output"] == "Any"
-    assert getattr(fn, "_bn_category") == "NVIDIA GPU"
+    assert getattr(fn, "_bn_category") == "NVIDIA CUDA"
 
 
 def test_generic_cutlass_auto_routes_by_input():

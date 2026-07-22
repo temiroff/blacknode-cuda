@@ -5,8 +5,38 @@ description = "Real GPU compute nodes: CUDA kernel lab, custom NVRTC kernels, GP
 requires-blacknode = ">=0.1.0"
 
 [categories]
-"NVIDIA GPU" = "#76b900"
+"NVIDIA CUDA" = "#76b900"
 
 [dependencies]
 pip = ["cupy-cuda12x[ctk]>=13", "numpy>=1.24", "pillow>=10", "opencv-python>=4.8"]
 imports = ["numpy", "PIL", "cupy", "cv2"]
+
+# Roadmap component; sources land in components/capability/nodes.
+[components.capability]
+description = "GPU, driver, and CUDA toolkit detection and preflight."
+default = true
+capabilities = ["compute.cuda.capability"]
+
+# Roadmap component; sources land in components/kernels/nodes.
+[components.kernels]
+description = "CUDA kernel lab and custom NVRTC-compiled kernels."
+default = true
+capabilities = ["compute.cuda.kernels"]
+
+# Roadmap component; sources land in components/image-processing/nodes.
+[components.image-processing]
+description = "GPU image filters and streaming filter servers."
+default = true
+capabilities = ["compute.cuda.image"]
+
+# Roadmap component; sources land in components/tensor-operations/nodes.
+[components.tensor-operations]
+description = "Tensor Core GEMM and CUTLASS matrix operations."
+default = true
+capabilities = ["compute.cuda.tensor"]
+
+# Roadmap component; sources land in components/benchmarks/nodes.
+[components.benchmarks]
+description = "Sustained throughput and speedup benchmarking harnesses."
+default = true
+capabilities = ["compute.cuda.benchmarks"]

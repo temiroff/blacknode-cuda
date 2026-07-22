@@ -11,7 +11,7 @@ from blacknode.pkg.blacknode_cuda import cuda_stream_runtime as stream_rt
 
 def test_registered_with_category():
     assert "CUDAImageFilterStream" in _NODE_REGISTRY
-    assert _NODE_REGISTRY["CUDAImageFilterStream"]._bn_category == "NVIDIA GPU"
+    assert _NODE_REGISTRY["CUDAImageFilterStream"]._bn_category == "NVIDIA CUDA"
     assert _NODE_REGISTRY["CUDAImageFilterStream"]._bn_package == "blacknode-cuda"
 
 
