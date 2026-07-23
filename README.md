@@ -77,7 +77,7 @@ walks the whole upstream graph again, which is far slower than actual frame
 rate.
 
 `CUDAImageFilterStream` is the real video path, matching how
-`CameraROS2Subscribe`/`CV2ColorObjectStream` already work: cook it **once** with
+`CameraROS2Subscribe`/`TrackingObject` already work: cook it **once** with
 `action=start` and it launches a dedicated background process
 (`scripts/cuda_filter_stream_server.py`) that polls an upstream snapshot URL
 (e.g. `CameraROS2Subscribe`'s `snapshot_url` output) in a tight loop, filters
