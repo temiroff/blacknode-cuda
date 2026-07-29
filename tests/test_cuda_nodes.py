@@ -96,7 +96,7 @@ def test_custom_kernel_empty_source_uses_default():
 
 
 def test_custom_kernel_declares_any_data_in_and_out():
-    fn = _NODE_REGISTRY["CUDACustomKernel"]
+    fn = cuda_custom_kernel
     assert getattr(fn, "_bn_input_types")["input"] == "Any"
     assert getattr(fn, "_bn_output_types")["output"] == "Any"
     assert getattr(fn, "_bn_output_types")["result"] == "Dict"
@@ -105,7 +105,7 @@ def test_custom_kernel_declares_any_data_in_and_out():
 
 
 def test_custom_kernel_default_code_is_image_kernel():
-    fn = _NODE_REGISTRY["CUDACustomKernel"]
+    fn = cuda_custom_kernel
     assert getattr(fn, "_bn_input_defaults")["template"] == "image_invert"
     assert getattr(fn, "_bn_input_defaults")["code"] == DEFAULT_IMAGE_SOURCE
     assert getattr(fn, "_bn_input_choices")["template"] == CUSTOM_KERNEL_TEMPLATES
@@ -319,7 +319,7 @@ cutlass_ready = pytest.mark.skipif(
 
 
 def test_cutlass_gemm_registered_and_matches_tensor_core_ports():
-    fn = _NODE_REGISTRY["CUTLASSGemm"]
+    fn = cuda_nodes.cutlass_gemm
     tc = _NODE_REGISTRY["TensorCoreGEMM"]
     # Drop-in comparable: same output ports as the WMMA node.
     assert getattr(fn, "_bn_outputs") == getattr(tc, "_bn_outputs")
@@ -419,7 +419,7 @@ def test_generic_cutlass_matmul_is_correct():
 # --- editor contract: ops render as a dropdown -----------------------------------
 
 def test_cuda_node_exposes_op_dropdown():
-    fn = _NODE_REGISTRY["CUDAKernelLab"]
+    fn = cuda_kernel_lab
     choices = fn._bn_input_choices
     assert "vector_add" in choices["op"]
     assert "mandelbrot" in choices["op"]

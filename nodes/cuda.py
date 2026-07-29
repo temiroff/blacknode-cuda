@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - keeps the package importable on minimal 
 
 from blacknode import streams as bn_streams
 from blacknode.node import Any as AnyPort
-from blacknode.node import Bool, Dict, Enum, Float, Image, Int, Text, node
+from blacknode.node import Bool, Dict, Enum, Float, Image, Int, Text, _NODE_REGISTRY, node
 
 from . import cuda_stream_runtime as stream_rt
 
@@ -1844,3 +1844,10 @@ def _conv_image(value: Any, decode_image) -> Any:
     if arr.ndim != 3:
         raise ValueError("conv2d needs an image (data URL) or an HxWxC array")
     return arr
+
+
+# The kernel lab and custom compiler remain reusable internal test and
+# implementation utilities. Public workflows consume the capability, image,
+# tensor, and benchmark nodes declared by the manifest.
+_NODE_REGISTRY.pop("CUDAKernelLab", None)
+_NODE_REGISTRY.pop("CUDACustomKernel", None)
