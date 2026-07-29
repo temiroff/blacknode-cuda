@@ -2,10 +2,10 @@
 
 **Real GPU compute nodes for [Blacknode](https://github.com/temiroff/Blacknode).**
 
-Install this Blacknode **extension package** to add CUDA compute blocks to the
-visual workflow editor: kernels
-compile and execute on your local NVIDIA GPU and report measured timings,
-CPU baselines, speedups, and correctness checks.
+Install this Blacknode **extension package** to add GPU capability, image
+processing, tensor-operation, and optional benchmark blocks to the visual
+workflow editor. Internal kernels compile and execute on the local NVIDIA GPU
+and provide validated primitives for those public components.
 
 ## Requirements
 
@@ -47,20 +47,30 @@ the example workflows show up in the Templates tab.
 
 | Node | What it does |
 |---|---|
-| `CUDAKernelLab` | Curated GPU ops (vector add, saxpy, matmul, softmax, FFT, mandelbrot, monte-carlo π, ...) with measured GPU vs CPU timings and a NumPy correctness check |
-| `CUDACustomKernel` | Write your own CUDA C kernel in the node, compiled at runtime with NVRTC (`cupy.RawKernel`) — includes starter templates |
 | `CUDAImageFilter` | GPU image filters (grayscale, gaussian blur, sobel edges, invert, ...) wired to Blacknode's image ports — one call, one filtered image |
 | `CUDAImageFilterStream` | The same filters running continuously as a live video feed — start/stop a background process that reads an upstream MJPEG source and re-serves its own GPU-filtered stream |
 | `TensorCoreGEMM` | WMMA Tensor Core half-precision matrix multiply via NVRTC |
-| `CUTLASS` / `CUTLASSGemm` | CUTLASS GEMM running through Blacknode's sandboxed worker |
+| `CUTLASS` | CUTLASS tensor operation running through Blacknode's sandboxed worker |
+| `CUTLASSGemm` | Optional sustained CUTLASS benchmark |
 | `GPUCapability` | Detect the local GPU: name, compute capability, memory, driver |
 | `GPURequirement` | Gate a workflow on a minimum GPU capability (preflight check) |
+
+## Components
+
+| Component | Default | Purpose |
+|---|---:|---|
+| `capability` | On | GPU, driver, and toolkit preflight |
+| `image-processing` | On | One-shot and managed-stream image filters |
+| `tensor-operations` | On | Tensor Core and CUTLASS operations |
+| `benchmarks` | Off | Sustained benchmark workloads |
+
+Compilation and launch utilities live under `internal/kernels`; they are
+package infrastructure rather than a selectable workflow component.
 
 ## Templates
 
 Ready-made workflows in `templates/`, loadable from the editor's Templates tab:
 
-- **NVIDIA CUDA Lab** — run and benchmark the curated op catalogue
 - **GPU Image Filter** — load an image, filter it on the GPU, view the result
 - **CUDA Image Filter Livestream** — start a ROS 2 camera MJPEG stream, run a
   GPU filter continuously on every frame, and watch the live filtered preview
