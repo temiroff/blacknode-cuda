@@ -55,7 +55,7 @@ def _normalize_laser_scan(outputs: dict[str, Any], source: dict[str, Any]) -> di
         return {}
     header = message.get("header") if isinstance(message.get("header"), dict) else {}
     stamp = header.get("stamp") if isinstance(header.get("stamp"), dict) else {}
-    source_time_ns = (
+    header_time_ns = (
         int(_finite(stamp.get("sec"), 0.0)) * 1_000_000_000
         + int(_finite(stamp.get("nanosec"), 0.0))
     )
@@ -70,7 +70,8 @@ def _normalize_laser_scan(outputs: dict[str, Any], source: dict[str, Any]) -> di
         "frame": str(header.get("frame_id") or "laser").strip() or "laser",
         "topic": str(source.get("topic") or ""),
         "message_type": str(source.get("message_type") or "sensor_msgs/msg/LaserScan"),
-        "source_time_ns": source_time_ns or int(status.get("last_message_time_ns") or 0),
+        "source_time_ns": header_time_ns or int(status.get("last_message_time_ns") or 0),
+        "header_time_ns": header_time_ns,
         "receive_time_ns": time.time_ns(),
         "angle_min": _finite(message.get("angle_min"), -math.pi),
         "angle_max": _finite(message.get("angle_max"), math.pi),
@@ -109,6 +110,36 @@ def _quaternion_yaw(value: dict[str, Any]) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
+def _frame_id(value: Any) -> str:
+    return str(value or "").strip().lstrip("/")
+
+
+def _compose_pose(first: dict[str, Any], second: dict[str, Any]) -> dict[str, float]:
+    yaw = float(first.get("yaw_rad") or 0.0)
+    cosine = math.cos(yaw)
+    sine = math.sin(yaw)
+    return {
+        "x_m": float(first.get("x_m") or 0.0) + cosine * float(second.get("x_m") or 0.0) - sine * float(second.get("y_m") or 0.0),
+        "y_m": float(first.get("y_m") or 0.0) + sine * float(second.get("x_m") or 0.0) + cosine * float(second.get("y_m") or 0.0),
+        "z_m": float(first.get("z_m") or 0.0) + float(second.get("z_m") or 0.0),
+        "yaw_rad": math.atan2(math.sin(yaw + float(second.get("yaw_rad") or 0.0)), math.cos(yaw + float(second.get("yaw_rad") or 0.0))),
+    }
+
+
+def _inverse_pose(value: dict[str, Any]) -> dict[str, float]:
+    yaw = float(value.get("yaw_rad") or 0.0)
+    cosine = math.cos(yaw)
+    sine = math.sin(yaw)
+    x = float(value.get("x_m") or 0.0)
+    y = float(value.get("y_m") or 0.0)
+    return {
+        "x_m": -cosine * x - sine * y,
+        "y_m": sine * x - cosine * y,
+        "z_m": -float(value.get("z_m") or 0.0),
+        "yaw_rad": -yaw,
+    }
+
+
 def _pose_candidates(value: Any, source: dict[str, Any]) -> list[dict[str, Any]]:
     message = _message_payload(value)
     if not message:
@@ -139,10 +170,88 @@ def _pose_candidates(value: Any, source: dict[str, Any]) -> list[dict[str, Any]]
         "z_m": _finite(position.get("z"), 0.0),
         "yaw_rad": _quaternion_yaw(orientation),
         "source_time_ns": _stamp_ns(message),
-        "frame": str(header.get("frame_id") or "map").strip() or "map",
-        "child_frame": str(message.get("child_frame_id") or "").strip(),
+        "frame": _frame_id(header.get("frame_id") or "map") or "map",
+        "child_frame": _frame_id(message.get("child_frame_id")),
         "message_type": message_type or ("tf2_msgs/msg/TFMessage" if transform else "geometry_msgs/msg/PoseStamped"),
+        "is_transform": bool(transform),
     }]
+
+
+def _tf_tree_pose(
+    candidates: list[dict[str, Any]],
+    parent_frame: str,
+    child_frame: str,
+    scan_frame: str,
+    scan_time_ns: int,
+    tolerance_seconds: float,
+) -> tuple[dict[str, Any], str]:
+    best_edges: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        parent = _frame_id(candidate.get("frame"))
+        child = _frame_id(candidate.get("child_frame"))
+        if not parent or not child or parent == child:
+            continue
+        stamp_ns = int(candidate.get("source_time_ns") or 0)
+        delta = abs(stamp_ns - scan_time_ns) / 1_000_000_000.0 if stamp_ns and scan_time_ns else 0.0
+        if stamp_ns and scan_time_ns and delta > tolerance_seconds:
+            continue
+        edge = {**candidate, "time_delta_seconds": delta}
+        key = (parent, child)
+        previous = best_edges.get(key)
+        if previous is None or delta < float(previous.get("time_delta_seconds") or 0.0):
+            best_edges[key] = edge
+    if not best_edges:
+        return {}, "TF stream has no transforms synchronized with the scan"
+
+    adjacency: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for (parent, child), edge in best_edges.items():
+        adjacency.setdefault(parent, []).append((child, edge))
+        adjacency.setdefault(child, []).append((parent, {
+            **edge,
+            **_inverse_pose(edge),
+            "frame": child,
+            "child_frame": parent,
+        }))
+
+    queue: list[tuple[str, dict[str, float], list[str], list[dict[str, Any]]]] = [(
+        parent_frame,
+        {"x_m": 0.0, "y_m": 0.0, "z_m": 0.0, "yaw_rad": 0.0},
+        [parent_frame],
+        [],
+    )]
+    visited = {parent_frame}
+    while queue:
+        frame, transform, path, edges = queue.pop(0)
+        if frame == child_frame:
+            timed_edges = [edge for edge in edges if int(edge.get("source_time_ns") or 0) > 0]
+            closest_edge = min(
+                timed_edges,
+                key=lambda edge: float(edge.get("time_delta_seconds") or 0.0),
+            ) if timed_edges else {}
+            return {
+                **transform,
+                "source_time_ns": int(closest_edge.get("source_time_ns") or 0),
+                "time_delta_seconds": max(
+                    (float(edge.get("time_delta_seconds") or 0.0) for edge in timed_edges),
+                    default=None,
+                ),
+                "frame": parent_frame,
+                "child_frame": child_frame,
+                "message_type": "tf2_msgs/msg/TFMessage",
+                "tf_path": path,
+                "includes_sensor_extrinsics": child_frame == _frame_id(scan_frame),
+            }, ""
+        for next_frame, edge in adjacency.get(frame, []):
+            if next_frame in visited:
+                continue
+            visited.add(next_frame)
+            queue.append((
+                next_frame,
+                _compose_pose(transform, edge),
+                [*path, next_frame],
+                [*edges, edge],
+            ))
+    return {}, f"TF has no path from {parent_frame!r} to {child_frame!r}"
 
 
 def _normalize_pose(
@@ -150,6 +259,9 @@ def _normalize_pose(
     source: dict[str, Any],
     scan_time_ns: int,
     tolerance_seconds: float,
+    parent_frame: str,
+    child_frame: str,
+    scan_frame: str,
 ) -> tuple[dict[str, Any], str]:
     values = list(outputs.get("messages") or [])
     latest = outputs.get("message")
@@ -158,6 +270,21 @@ def _normalize_pose(
     candidates = [candidate for value in values for candidate in _pose_candidates(value, source)]
     if not candidates:
         return {}, "Pose stream has no supported pose message"
+    transform_candidates = [candidate for candidate in candidates if candidate.get("is_transform")]
+    if transform_candidates:
+        parent = _frame_id(parent_frame) or "odom"
+        configured_child = _frame_id(child_frame)
+        child = _frame_id(scan_frame) if not configured_child or configured_child == "auto" else configured_child
+        if not child:
+            return {}, "pose_child_frame=auto requires a frame_id in the scan message"
+        return _tf_tree_pose(
+            transform_candidates,
+            parent,
+            child,
+            scan_frame,
+            scan_time_ns,
+            tolerance_seconds,
+        )
     timed = [candidate for candidate in candidates if int(candidate.get("source_time_ns") or 0) > 0]
     if scan_time_ns > 0 and timed:
         pose = min(timed, key=lambda item: abs(int(item["source_time_ns"]) - scan_time_ns))
@@ -174,6 +301,8 @@ def _normalize_pose(
         **pose,
         "time_delta_seconds": delta_seconds,
         "receive_time_ns": time.time_ns(),
+        "tf_path": [],
+        "includes_sensor_extrinsics": False,
     }, ""
 
 
@@ -183,6 +312,12 @@ def _combined_sensor_pose(options: dict[str, Any], pose: dict[str, Any]) -> tupl
     sensor_yaw = float(options.get("sensor_yaw_rad") or 0.0)
     if not pose:
         return sensor_x, sensor_y, sensor_yaw
+    if pose.get("includes_sensor_extrinsics"):
+        return (
+            float(pose.get("x_m") or 0.0),
+            float(pose.get("y_m") or 0.0),
+            float(pose.get("yaw_rad") or 0.0),
+        )
     robot_yaw = float(pose.get("yaw_rad") or 0.0)
     cosine = math.cos(robot_yaw)
     sine = math.sin(robot_yaw)
@@ -248,6 +383,7 @@ def _scene_from_processed(
         "scan": {
             "angle_min_rad": float(scan.get("angle_min") or 0.0),
             "angle_max_rad": float(scan.get("angle_max") or 0.0),
+            "angle_increment_rad": float(scan.get("angle_increment") or 0.0),
             "range_min_m": float(scan.get("range_min") or 0.0),
             "range_max_m": float(scan.get("range_max") or 0.0),
         },
@@ -265,6 +401,7 @@ def _scene_from_processed(
         "display_count": len(display_points),
         "display_stride": display_stride,
         "history_registered": bool(pose),
+        "history_paused": bool(options.get("history_paused", False)),
         "pose_source": str(pose.get("message_type") or "sensor-local"),
         "registration": ({
             "method": "external-pose",
@@ -276,12 +413,14 @@ def _scene_from_processed(
             "yaw_rad": float(pose.get("yaw_rad") or 0.0),
             "source_time_ns": int(pose.get("source_time_ns") or 0),
             "time_delta_seconds": pose.get("time_delta_seconds"),
+            "tf_path": list(pose.get("tf_path") or []),
         } if pose else {}),
         "animation": {
             "enabled": bool(options.get("animate_scan", True)),
             "show_rays": bool(options.get("show_rays", True)),
             "ray_trail_count": int(options.get("ray_trail_count") or 96),
             "pulse_hz": float(options.get("scan_hz") or 1.0),
+            "sweep_direction": "counterclockwise",
             "accumulate_hits": bool(options.get("accumulate_hits", True)),
         },
         "device": str(processed.get("device") or ""),
@@ -298,6 +437,12 @@ def _append_scan_history(
     if len(colors) < len(points):
         colors.extend([[0.0, 0.78, 1.0]] * (len(points) - len(colors)))
     options = session["options"]
+    if session.get("history_paused"):
+        return (
+            list(session.get("history_points") or []),
+            list(session.get("history_colors") or []),
+            int(session.get("accumulated_scan_count") or 0),
+        )
     if not options.get("accumulate_hits", True):
         session["history_points"] = points
         session["history_colors"] = colors
@@ -377,6 +522,7 @@ def _update_session(session: dict[str, Any]) -> None:
     from .warp_points import process_laser_scan
 
     options = session["options"]
+    options["history_paused"] = bool(session.get("history_paused"))
     pose_source = session.get("pose_source") if isinstance(session.get("pose_source"), dict) else {}
     pose: dict[str, Any] = {}
     if pose_source:
@@ -399,8 +545,11 @@ def _update_session(session: dict[str, Any]) -> None:
             pose, pose_error = _normalize_pose(
                 pose_outputs,
                 pose_source,
-                int(scan.get("source_time_ns") or 0),
+                int(scan.get("header_time_ns") or 0),
                 float(options.get("pose_sync_tolerance_s") or 0.25),
+                str(options.get("pose_parent_frame") or "odom"),
+                str(options.get("pose_child_frame") or "auto"),
+                str(scan.get("frame") or ""),
             )
         if not pose_fresh or not pose:
             pose_state = str(pose_status.get("state") or "waiting")
@@ -484,7 +633,13 @@ def _update_session(session: dict[str, Any]) -> None:
             native = warp_viewer_runtime.start_viewer(
                 viewer_id=session["viewer_id"],
                 scan=native_scan,
-                options={**options, "device": session["device"], "live": True},
+                options={
+                    **options,
+                    "device": session["device"],
+                    "live": True,
+                    "accumulate_hits": bool(options.get("accumulate_hits", True))
+                    and not bool(session.get("history_paused")),
+                },
             )
             session["native"] = native
         else:
@@ -525,6 +680,7 @@ def _update_session(session: dict[str, Any]) -> None:
             "point_count": int(scene.get("point_count") or 0),
             "current_point_count": int(scene.get("current_point_count") or 0),
             "accumulated_scan_count": int(scene.get("accumulated_scan_count") or 0),
+            "history_paused": bool(session.get("history_paused")),
             "kernel_ms": float(scene.get("kernel_ms") or 0.0),
             "error": "",
         },
@@ -611,6 +767,7 @@ def start_viewer(
             "options": dict(options),
             "running": True,
             "live": False,
+            "history_paused": False,
             "scene": {},
             "status": {
                 "kind": "blacknode.viewer-status",
@@ -667,6 +824,7 @@ def clear_viewer(viewer_id: str) -> dict[str, Any]:
         session["history_points"] = []
         session["history_colors"] = []
         session["accumulated_scan_count"] = 0
+        session["history_paused"] = True
         scene = dict(session.get("scene") or {})
         if scene:
             scene.update(
@@ -676,12 +834,58 @@ def clear_viewer(viewer_id: str) -> dict[str, Any]:
                 accumulated_scan_count=0,
                 display_count=0,
                 display_stride=1,
+                history_paused=True,
             )
         session["scene"] = scene
         if session.get("mode") == "device":
             warp_viewer_runtime.stop_viewer(clean_id)
             session["native"] = {}
-        session["report"] = "Viewer scan history cleared"
+        status = dict(session.get("status") or {})
+        status["history_paused"] = True
+        session["status"] = status
+        session["report"] = "Viewer scan history cleared and paused"
+        return _viewer_outputs(session)
+
+
+def resume_viewer(viewer_id: str) -> dict[str, Any]:
+    clean_id = _safe_id(viewer_id)
+    with _LOCK:
+        session = _SESSIONS.get(clean_id)
+        if session is None:
+            return viewer_status(clean_id)
+        session["history_paused"] = False
+        scene = dict(session.get("scene") or {})
+        if scene:
+            scene["history_paused"] = False
+        session["scene"] = scene
+        status = dict(session.get("status") or {})
+        status["history_paused"] = False
+        session["status"] = status
+        if session.get("mode") == "device":
+            warp_viewer_runtime.stop_viewer(clean_id)
+            session["native"] = {}
+        session["report"] = "Viewer scan history resumed"
+        return _viewer_outputs(session)
+
+
+def pause_viewer(viewer_id: str) -> dict[str, Any]:
+    clean_id = _safe_id(viewer_id)
+    with _LOCK:
+        session = _SESSIONS.get(clean_id)
+        if session is None:
+            return viewer_status(clean_id)
+        session["history_paused"] = True
+        scene = dict(session.get("scene") or {})
+        if scene:
+            scene["history_paused"] = True
+        session["scene"] = scene
+        status = dict(session.get("status") or {})
+        status["history_paused"] = True
+        session["status"] = status
+        if session.get("mode") == "device":
+            warp_viewer_runtime.stop_viewer(clean_id)
+            session["native"] = {}
+        session["report"] = "Viewer scan history paused"
         return _viewer_outputs(session)
 
 

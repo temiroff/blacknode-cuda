@@ -419,9 +419,11 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "editor or in a native OpenGL window on the machine running the graph."
     ),
     inputs={
-        "action": Enum(["status", "start", "clear", "stop"], default="status"),
+        "action": Enum(["status", "start", "clear", "pause", "resume", "stop"], default="status"),
         "source": Dict,
         "pose": Dict,
+        "pose_parent_frame": Text(default="odom"),
+        "pose_child_frame": Text(default="auto"),
         "viewer_id": Text(default="viewer"),
         "mode": Enum(["editor", "device"], default="editor"),
         "processor": Enum(["warp"], default="warp"),
@@ -474,6 +476,10 @@ def viewer(ctx: dict) -> dict:
         }
     if action == "clear":
         return managed_viewer_rt.clear_viewer(viewer_id)
+    if action == "resume":
+        return managed_viewer_rt.resume_viewer(viewer_id)
+    if action == "pause":
+        return managed_viewer_rt.pause_viewer(viewer_id)
     if action == "status":
         return managed_viewer_rt.viewer_status(viewer_id)
     if action != "start":
@@ -481,9 +487,9 @@ def viewer(ctx: dict) -> dict:
             "running": False,
             "live": False,
             "scene": {},
-            "status": {"state": "error", "error": "action must be status, start, clear, or stop"},
+            "status": {"state": "error", "error": "action must be status, start, clear, pause, resume, or stop"},
             "viewer": {},
-            "report": "Viewer action must be status, start, clear, or stop",
+            "report": "Viewer action must be status, start, clear, pause, resume, or stop",
         }
     source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
     pose_source = ctx.get("pose") if isinstance(ctx.get("pose"), dict) else {}
@@ -520,6 +526,8 @@ def viewer(ctx: dict) -> dict:
                 0.01,
                 min(10.0, float(ctx.get("pose_sync_tolerance_s") or 0.25)),
             ),
+            "pose_parent_frame": str(ctx.get("pose_parent_frame") or "odom").strip(),
+            "pose_child_frame": str(ctx.get("pose_child_frame") or "auto").strip(),
         },
         source_reader=source_reader if callable(source_reader) else None,
     )
@@ -623,7 +631,6 @@ def run_viewer_loop(
     active_sensor_pose = sensor_pose
     active_robot_pose = (0.0, 0.0, 0.0)
     active_scan_angles = (-math.pi, math.pi)
-    active_scan_range = max(0.1, filter_max_m)
     history_registered = False
     frame = 0
     while renderer.is_running():
@@ -654,8 +661,6 @@ def run_viewer_loop(
                 float(scan.get("angle_min") if scan.get("angle_min") is not None else -math.pi),
                 float(scan.get("angle_max") if scan.get("angle_max") is not None else math.pi),
             )
-            reported_range = float(scan.get("range_max") or filter_max_m)
-            active_scan_range = max(0.1, min(filter_max_m, reported_range))
             processed = process_laser_scan(
                 scan,
                 device=device,
@@ -668,6 +673,26 @@ def run_viewer_loop(
             )
             filtered_points = processed.get("filtered_points") or []
             filtered_colors = processed.get("colors") or []
+            if filtered_points and not compare_numpy:
+                if len(filtered_colors) < len(filtered_points):
+                    filtered_colors = [
+                        *filtered_colors,
+                        *([(0.0, 0.78, 1.0)] * (len(filtered_points) - len(filtered_colors))),
+                    ]
+                scan_start = active_sensor_pose[2] + active_scan_angles[0]
+                ordered = sorted(
+                    zip(filtered_points, filtered_colors),
+                    key=lambda item: (
+                        math.atan2(
+                            float(item[0][1]) - active_sensor_pose[1],
+                            float(item[0][0]) - active_sensor_pose[0],
+                        ) - scan_start
+                    ) % (2.0 * math.pi),
+                )
+                filtered_points = [item[0] for item in ordered]
+                filtered_colors = [item[1] for item in ordered]
+                processed["filtered_points"] = filtered_points
+                processed["colors"] = filtered_colors
             if persist_scans and filtered_points:
                 accumulated_points.extend(filtered_points)
                 accumulated_colors.extend(filtered_colors)
@@ -767,33 +792,6 @@ def run_viewer_loop(
                 as_spheres=False,
                 visible=True,
             )
-        if animate_scan and phase > 0.0:
-            for ring_index, ring_offset in enumerate((0.0, 0.22, 0.44)):
-                ring_phase = (phase - ring_offset) % 1.0
-                ring_radius = max(0.02, active_scan_range * ring_phase)
-                ring_vertices = []
-                ring_indices = []
-                angle_span = max(
-                    -2.0 * math.pi,
-                    min(2.0 * math.pi, active_scan_angles[1] - active_scan_angles[0]),
-                )
-                ring_segments = max(8, math.ceil(72 * abs(angle_span) / (2.0 * math.pi)))
-                for ring_segment in range(ring_segments + 1):
-                    angle = active_sensor_pose[2] + active_scan_angles[0] + angle_span * ring_segment / ring_segments
-                    ring_vertices.append((
-                        active_sensor_pose[0] + math.cos(angle) * ring_radius,
-                        active_sensor_pose[1] + math.sin(angle) * ring_radius,
-                        0.0,
-                    ))
-                    if ring_segment:
-                        ring_indices.extend((ring_segment - 1, ring_segment))
-                renderer.render_line_list(
-                    f"real_scan_pulse_{ring_index}",
-                    ring_vertices,
-                    ring_indices,
-                    color=(0.04 + ring_index * 0.03, 0.35, 0.62),
-                    radius=max(0.0015, point_radius * 0.1),
-                )
         if visible_raw:
             renderer.render_points(
                 "raw_lidar",
@@ -875,7 +873,7 @@ def run_viewer_loop(
             if animate_scan else "complete scan"
         )
         renderer.window.set_caption(
-            f"{title} | {scan_label} | processed {processed.get('report', {}).get('input_count', 0):,} rays | "
+            f"{title} | CCW {scan_label} | processed {processed.get('report', {}).get('input_count', 0):,} rays | "
             f"displayed {point_count:,} hits | history {len(accumulated_points):,} from {accumulated_scan_count:,} scans | "
             f"{comparison_label}{mode_label} | {'pose-registered' if history_registered else 'sensor-local'} | "
             "Space: compare  P: pause  R: restart"

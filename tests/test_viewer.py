@@ -29,6 +29,17 @@ def _pose_source():
     }
 
 
+def _tf_source():
+    return {
+        "kind": "blacknode.message-stream",
+        "schema_version": 1,
+        "stream_id": "topic-subscriber:/tf",
+        "protocol": "ros2",
+        "topic": "/tf",
+        "message_type": "tf2_msgs/msg/TFMessage",
+    }
+
+
 def _outputs(received=4, *, fresh=True):
     return {
         "running": True,
@@ -77,6 +88,29 @@ def _pose_outputs(received=4, *, fresh=True, x=2.0, y=3.0):
     }
 
 
+def _tf_outputs(received=4):
+    def transform(parent, child, x, y, z, w):
+        return {
+            "header": {"stamp": {"sec": received, "nanosec": 5}, "frame_id": parent},
+            "child_frame_id": child,
+            "transform": {
+                "translation": {"x": x, "y": y, "z": 0.0},
+                "rotation": {"x": 0.0, "y": 0.0, "z": z, "w": w},
+            },
+        }
+
+    message = {"transforms": [
+        transform("map", "camera", 99.0, 99.0, 0.0, 1.0),
+        transform("odom", "base_link", 1.0, 2.0, 2 ** -0.5, 2 ** -0.5),
+        transform("base_link", "laser", 0.2, 0.0, 2 ** -0.5, 2 ** -0.5),
+    ]}
+    return {
+        "running": True,
+        "message": message,
+        "messages": [message],
+        "status": {"state": "ready", "source_fresh": True, "received": received, "error": ""},
+        "received": received,
+    }
 def _processed(scan, **kwargs):
     assert scan["kind"] == "blacknode.laser-scan-stream"
     assert scan["frame"] == "laser"
@@ -98,8 +132,12 @@ def test_viewer_registers_as_generic_live_spatial_node():
     assert fn._bn_live_capable is True
     assert fn._bn_input_types["source"] == "Dict"
     assert fn._bn_input_types["pose"] == "Dict"
+    assert fn._bn_input_types["pose_parent_frame"] == "Text"
+    assert fn._bn_input_types["pose_child_frame"] == "Text"
     assert fn._bn_input_types["accumulate_hits"] == "Bool"
     assert "clear" in fn._bn_input_choices["action"]
+    assert "pause" in fn._bn_input_choices["action"]
+    assert "resume" in fn._bn_input_choices["action"]
     assert fn._bn_output_types["scene"] == "Dict"
     assert _NODE_REGISTRY["WarpLiDARViewer"]._bn_hidden is True
     assert _NODE_REGISTRY["WarpSLAMDiscoveryViewer"]._bn_hidden is True
@@ -144,6 +182,40 @@ def test_viewer_registers_scan_history_with_generic_pose_stream(monkeypatch):
 
 
 def test_viewer_waits_instead_of_accumulating_with_stale_pose(monkeypatch):
+    viewer_runtime.stop_viewer()
+
+
+def test_viewer_resolves_multihop_tf_to_scan_frame_and_uses_tf_forward(monkeypatch):
+    viewer_runtime.stop_viewer()
+    captured = {}
+
+    def process(scan, **kwargs):
+        captured["sensor_pose"] = kwargs["sensor_pose"]
+        return _processed(scan, **kwargs)
+
+    def reader(source):
+        return _tf_outputs() if source.get("topic") == "/tf" else _outputs()
+
+    monkeypatch.setattr(warp_points, "process_laser_scan", process)
+    result = _NODE_REGISTRY["Viewer"]({
+        "action": "start",
+        "source": _source(),
+        "pose": _tf_source(),
+        "pose_parent_frame": "odom",
+        "pose_child_frame": "auto",
+        "sensor_x_m": 9.0,
+        "viewer_id": "tf-registered",
+        "mode": "editor",
+        "device": "cpu",
+        "__message_stream_reader__": reader,
+    })
+
+    sensor_x, sensor_y, sensor_yaw = captured["sensor_pose"]
+    assert abs(sensor_x - 1.0) < 1e-6
+    assert abs(sensor_y - 2.2) < 1e-6
+    assert abs(abs(sensor_yaw) - 3.141592653589793) < 1e-6
+    assert result["scene"]["registration"]["tf_path"] == ["odom", "base_link", "laser"]
+    assert result["scene"]["registration"]["child_frame"] == "laser"
     viewer_runtime.stop_viewer()
     called = False
 
@@ -226,17 +298,23 @@ def test_viewer_accumulates_real_scans_and_clears_history(monkeypatch):
     cleared = _NODE_REGISTRY["Viewer"]({"action": "clear", "viewer_id": "history"})
     cached = viewer_runtime.viewer_status("history")
     state["received"] = 3
-    resumed = viewer_runtime.viewer_status("history")
+    still_paused = viewer_runtime.viewer_status("history")
+    resumed = _NODE_REGISTRY["Viewer"]({"action": "resume", "viewer_id": "history"})
+    state["received"] = 4
+    rebuilding = viewer_runtime.viewer_status("history")
 
     assert accumulated["scene"]["point_count"] == 4
     assert accumulated["scene"]["accumulated_scan_count"] == 2
     assert cleared["scene"]["point_count"] == 0
     assert cleared["scene"]["current_point_count"] == 2
     assert cleared["scene"]["accumulated_scan_count"] == 0
+    assert cleared["scene"]["history_paused"] is True
     assert cached["scene"]["point_count"] == 0
-    assert resumed["scene"]["point_count"] == 2
-    assert resumed["scene"]["accumulated_scan_count"] == 1
-    assert cleared["report"] == "Viewer scan history cleared"
+    assert still_paused["scene"]["point_count"] == 0
+    assert resumed["scene"]["history_paused"] is False
+    assert rebuilding["scene"]["point_count"] == 2
+    assert rebuilding["scene"]["accumulated_scan_count"] == 1
+    assert cleared["report"] == "Viewer scan history cleared and paused"
     viewer_runtime.stop_viewer()
 
 

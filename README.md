@@ -22,7 +22,7 @@ Use **Packages → blacknode-cuda → Install prerequisites** after installation
 | `spatial-processing` | On | `Viewer`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
-`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and an optional pose stream, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry`, `PoseStamped`, or TF poses register scan history in the map frame; missing or out-of-sync poses pause accumulation. LaserScan remains planar, while the view provides 3D orbit controls, a meter grid, field-of-view scan pulses, rays, clearable bounded history, and the reported angular coverage. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
+`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and an optional pose stream, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry` and `PoseStamped` messages register scan history directly. A `TFMessage` stream can resolve and chain `pose_parent_frame` to `pose_child_frame`; `auto` targets the LaserScan frame so its TF orientation and sensor offset are applied. Missing or out-of-sync poses pause accumulation. The view provides 3D orbit controls, a counterclockwise ray sweep, reported angular coverage, bounded history, and an accumulation toggle. LaserScan geometry remains planar. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
 
 ## Included workflows
 
