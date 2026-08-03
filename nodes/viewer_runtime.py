@@ -84,6 +84,115 @@ def _normalize_laser_scan(outputs: dict[str, Any], source: dict[str, Any]) -> di
     }
 
 
+def _message_payload(value: Any) -> dict[str, Any]:
+    """Unwrap local and paired-device ROS2 message envelopes."""
+    if not isinstance(value, dict):
+        return {}
+    nested = value.get("message")
+    return nested if isinstance(nested, dict) else value
+
+
+def _stamp_ns(value: dict[str, Any]) -> int:
+    header = value.get("header") if isinstance(value.get("header"), dict) else {}
+    stamp = header.get("stamp") if isinstance(header.get("stamp"), dict) else {}
+    return (
+        int(_finite(stamp.get("sec"), 0.0)) * 1_000_000_000
+        + int(_finite(stamp.get("nanosec"), 0.0))
+    )
+
+
+def _quaternion_yaw(value: dict[str, Any]) -> float:
+    x = _finite(value.get("x"), 0.0)
+    y = _finite(value.get("y"), 0.0)
+    z = _finite(value.get("z"), 0.0)
+    w = _finite(value.get("w"), 1.0)
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _pose_candidates(value: Any, source: dict[str, Any]) -> list[dict[str, Any]]:
+    message = _message_payload(value)
+    if not message:
+        return []
+    transforms = message.get("transforms")
+    if isinstance(transforms, list):
+        candidates: list[dict[str, Any]] = []
+        for transform in transforms:
+            candidates.extend(_pose_candidates(transform, source))
+        return candidates
+
+    pose_container = message.get("pose") if isinstance(message.get("pose"), dict) else {}
+    pose = pose_container.get("pose") if isinstance(pose_container.get("pose"), dict) else pose_container
+    transform = message.get("transform") if isinstance(message.get("transform"), dict) else {}
+    position = pose.get("position") if isinstance(pose.get("position"), dict) else {}
+    orientation = pose.get("orientation") if isinstance(pose.get("orientation"), dict) else {}
+    if transform:
+        position = transform.get("translation") if isinstance(transform.get("translation"), dict) else {}
+        orientation = transform.get("rotation") if isinstance(transform.get("rotation"), dict) else {}
+    if not position or not orientation:
+        return []
+
+    header = message.get("header") if isinstance(message.get("header"), dict) else {}
+    message_type = str(source.get("message_type") or "").strip()
+    return [{
+        "x_m": _finite(position.get("x"), 0.0),
+        "y_m": _finite(position.get("y"), 0.0),
+        "z_m": _finite(position.get("z"), 0.0),
+        "yaw_rad": _quaternion_yaw(orientation),
+        "source_time_ns": _stamp_ns(message),
+        "frame": str(header.get("frame_id") or "map").strip() or "map",
+        "child_frame": str(message.get("child_frame_id") or "").strip(),
+        "message_type": message_type or ("tf2_msgs/msg/TFMessage" if transform else "geometry_msgs/msg/PoseStamped"),
+    }]
+
+
+def _normalize_pose(
+    outputs: dict[str, Any],
+    source: dict[str, Any],
+    scan_time_ns: int,
+    tolerance_seconds: float,
+) -> tuple[dict[str, Any], str]:
+    values = list(outputs.get("messages") or [])
+    latest = outputs.get("message")
+    if latest:
+        values.append(latest)
+    candidates = [candidate for value in values for candidate in _pose_candidates(value, source)]
+    if not candidates:
+        return {}, "Pose stream has no supported pose message"
+    timed = [candidate for candidate in candidates if int(candidate.get("source_time_ns") or 0) > 0]
+    if scan_time_ns > 0 and timed:
+        pose = min(timed, key=lambda item: abs(int(item["source_time_ns"]) - scan_time_ns))
+        delta_seconds = abs(int(pose["source_time_ns"]) - scan_time_ns) / 1_000_000_000.0
+        if delta_seconds > tolerance_seconds:
+            return {}, (
+                f"Closest pose is {delta_seconds:.3f}s from the scan; "
+                f"increase pose_sync_tolerance_s only if both topics use the same clock"
+            )
+    else:
+        pose = candidates[-1]
+        delta_seconds = None
+    return {
+        **pose,
+        "time_delta_seconds": delta_seconds,
+        "receive_time_ns": time.time_ns(),
+    }, ""
+
+
+def _combined_sensor_pose(options: dict[str, Any], pose: dict[str, Any]) -> tuple[float, float, float]:
+    sensor_x = float(options.get("sensor_x_m") or 0.0)
+    sensor_y = float(options.get("sensor_y_m") or 0.0)
+    sensor_yaw = float(options.get("sensor_yaw_rad") or 0.0)
+    if not pose:
+        return sensor_x, sensor_y, sensor_yaw
+    robot_yaw = float(pose.get("yaw_rad") or 0.0)
+    cosine = math.cos(robot_yaw)
+    sine = math.sin(robot_yaw)
+    return (
+        float(pose.get("x_m") or 0.0) + cosine * sensor_x - sine * sensor_y,
+        float(pose.get("y_m") or 0.0) + sine * sensor_x + cosine * sensor_y,
+        robot_yaw + sensor_yaw,
+    )
+
+
 def _viewer_outputs(session: dict[str, Any]) -> dict[str, Any]:
     status = dict(session.get("status") or {})
     return {
@@ -112,6 +221,8 @@ def _scene_from_processed(
     history_points: list[Any],
     history_colors: list[Any],
     accumulated_scan_count: int,
+    sensor_pose: tuple[float, float, float],
+    pose: dict[str, Any],
 ) -> dict[str, Any]:
     current_points = list(processed.get("filtered_points") or [])
     current_colors = list(processed.get("colors") or [])
@@ -124,14 +235,15 @@ def _scene_from_processed(
         "schema_version": 1,
         "primitive": "point-cloud",
         "projection": "xy",
-        "frame": str(scan.get("frame") or "laser"),
+        "frame": str(pose.get("frame") or scan.get("frame") or "laser"),
+        "source_frame": str(scan.get("frame") or "laser"),
         "source_time_ns": int(scan.get("source_time_ns") or 0),
         "receive_time_ns": int(scan.get("receive_time_ns") or 0),
         "sequence": int(source_outputs.get("received") or 0),
         "sensor": {
-            "x_m": float(options.get("sensor_x_m") or 0.0),
-            "y_m": float(options.get("sensor_y_m") or 0.0),
-            "yaw_rad": float(options.get("sensor_yaw_rad") or 0.0),
+            "x_m": sensor_pose[0],
+            "y_m": sensor_pose[1],
+            "yaw_rad": sensor_pose[2],
         },
         "scan": {
             "angle_min_rad": float(scan.get("angle_min") or 0.0),
@@ -152,8 +264,19 @@ def _scene_from_processed(
         "accumulated_scan_count": accumulated_scan_count,
         "display_count": len(display_points),
         "display_stride": display_stride,
-        "history_registered": False,
-        "pose_source": "sensor-local",
+        "history_registered": bool(pose),
+        "pose_source": str(pose.get("message_type") or "sensor-local"),
+        "registration": ({
+            "method": "external-pose",
+            "frame": str(pose.get("frame") or "map"),
+            "child_frame": str(pose.get("child_frame") or ""),
+            "x_m": float(pose.get("x_m") or 0.0),
+            "y_m": float(pose.get("y_m") or 0.0),
+            "z_m": float(pose.get("z_m") or 0.0),
+            "yaw_rad": float(pose.get("yaw_rad") or 0.0),
+            "source_time_ns": int(pose.get("source_time_ns") or 0),
+            "time_delta_seconds": pose.get("time_delta_seconds"),
+        } if pose else {}),
         "animation": {
             "enabled": bool(options.get("animate_scan", True)),
             "show_rays": bool(options.get("show_rays", True)),
@@ -254,17 +377,58 @@ def _update_session(session: dict[str, Any]) -> None:
     from .warp_points import process_laser_scan
 
     options = session["options"]
+    pose_source = session.get("pose_source") if isinstance(session.get("pose_source"), dict) else {}
+    pose: dict[str, Any] = {}
+    if pose_source:
+        try:
+            pose_outputs = reader(dict(pose_source))
+        except Exception as exc:
+            pose_outputs = {
+                "status": {
+                    "state": "unavailable",
+                    "source_fresh": False,
+                    "error": f"pose stream read failed ({type(exc).__name__}: {exc})",
+                }
+            }
+        if not isinstance(pose_outputs, dict):
+            pose_outputs = {"status": {"state": "unavailable", "source_fresh": False}}
+        pose_status = pose_outputs.get("status") if isinstance(pose_outputs.get("status"), dict) else {}
+        pose_fresh = bool(pose_status.get("source_fresh"))
+        pose_error = str(pose_status.get("error") or "").strip()
+        if pose_fresh:
+            pose, pose_error = _normalize_pose(
+                pose_outputs,
+                pose_source,
+                int(scan.get("source_time_ns") or 0),
+                float(options.get("pose_sync_tolerance_s") or 0.25),
+            )
+        if not pose_fresh or not pose:
+            pose_state = str(pose_status.get("state") or "waiting")
+            error = pose_error or "Viewer is waiting for a fresh pose message"
+            session.update(
+                live=False,
+                status={
+                    "kind": "blacknode.viewer-status",
+                    "schema_version": 1,
+                    "state": "stale" if pose_state == "stale" or pose_fresh else "waiting",
+                    "source_fresh": True,
+                    "pose_connected": True,
+                    "pose_fresh": False,
+                    "received": int(source_outputs.get("received") or 0),
+                    "pose_received": int(pose_outputs.get("received") or 0),
+                    "error": error,
+                },
+                report=error,
+            )
+            return
+    sensor_pose = _combined_sensor_pose(options, pose)
     processed = process_laser_scan(
         scan,
         device=session["device"],
         filter_min_m=options["filter_min_m"],
         filter_max_m=options["filter_max_m"],
         stride=options["stride"],
-        sensor_pose=(
-            options["sensor_x_m"],
-            options["sensor_y_m"],
-            options["sensor_yaw_rad"],
-        ),
+        sensor_pose=sensor_pose,
         include_raw_points=False,
         compare_numpy=False,
     )
@@ -296,18 +460,35 @@ def _update_session(session: dict[str, Any]) -> None:
         history_points,
         history_colors,
         accumulated_scan_count,
+        sensor_pose,
+        pose,
     )
     if session["mode"] == "device":
+        native_scan = {
+            **scan,
+            "viewer_pose": {
+                "x_m": sensor_pose[0],
+                "y_m": sensor_pose[1],
+                "yaw_rad": sensor_pose[2],
+            },
+            "viewer_robot_pose": ({
+                "x_m": float(pose.get("x_m") or 0.0),
+                "y_m": float(pose.get("y_m") or 0.0),
+                "yaw_rad": float(pose.get("yaw_rad") or 0.0),
+            } if pose else {}),
+            "history_registered": bool(pose),
+            "viewer_frame": str(pose.get("frame") or scan.get("frame") or "laser"),
+        }
         native = session.get("native") if isinstance(session.get("native"), dict) else {}
         if not native.get("running"):
             native = warp_viewer_runtime.start_viewer(
                 viewer_id=session["viewer_id"],
-                scan=scan,
+                scan=native_scan,
                 options={**options, "device": session["device"], "live": True},
             )
             session["native"] = native
         else:
-            native_update = warp_viewer_runtime.update_viewer_scan(session["viewer_id"], scan)
+            native_update = warp_viewer_runtime.update_viewer_scan(session["viewer_id"], native_scan)
             if not native_update.get("ok"):
                 native = native_update
         if not native.get("ok", True):
@@ -337,6 +518,9 @@ def _update_session(session: dict[str, Any]) -> None:
             "schema_version": 1,
             "state": "ready",
             "source_fresh": True,
+            "pose_connected": bool(pose_source),
+            "pose_fresh": bool(pose) if pose_source else False,
+            "pose_time_delta_seconds": pose.get("time_delta_seconds") if pose else None,
             "received": int(source_outputs.get("received") or 0),
             "point_count": int(scene.get("point_count") or 0),
             "current_point_count": int(scene.get("current_point_count") or 0),
@@ -347,6 +531,7 @@ def _update_session(session: dict[str, Any]) -> None:
         report=(
             f"Viewer {session['mode']} retained {int(scene.get('point_count') or 0):,} "
             f"hits from {int(scene.get('accumulated_scan_count') or 0):,} scan(s); "
+            f"{'pose-registered; ' if pose else 'sensor-local; '}"
             f"Warp {float(scene.get('kernel_ms') or 0.0):.3f} ms"
         ),
     )
@@ -366,6 +551,7 @@ def start_viewer(
     viewer_id: str,
     node_id: str,
     source: dict[str, Any],
+    pose_source: dict[str, Any] | None,
     mode: str,
     device: str,
     options: dict[str, Any],
@@ -393,6 +579,15 @@ def start_viewer(
             "viewer": {},
             "report": "Connect ROS2.stream to Viewer.source",
         }
+    if pose_source and pose_source.get("kind") != "blacknode.message-stream":
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "status": {"state": "error", "error": "pose must be a blacknode.message-stream"},
+            "viewer": {},
+            "report": "Connect a pose-producing ROS2.stream to Viewer.pose",
+        }
     selected_mode = str(mode or "editor").strip().lower()
     if selected_mode not in {"editor", "device"}:
         selected_mode = "editor"
@@ -409,6 +604,7 @@ def start_viewer(
             "viewer_id": clean_id,
             "node_id": str(node_id or ""),
             "source": dict(source),
+            "pose_source": dict(pose_source or {}),
             "source_reader": source_reader,
             "mode": selected_mode,
             "device": str(device or "cuda:0"),

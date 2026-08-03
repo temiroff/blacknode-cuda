@@ -18,6 +18,17 @@ def _source():
     }
 
 
+def _pose_source():
+    return {
+        "kind": "blacknode.message-stream",
+        "schema_version": 1,
+        "stream_id": "topic-subscriber:/odom",
+        "protocol": "ros2",
+        "topic": "/odom",
+        "message_type": "nav_msgs/msg/Odometry",
+    }
+
+
 def _outputs(received=4, *, fresh=True):
     return {
         "running": True,
@@ -35,6 +46,31 @@ def _outputs(received=4, *, fresh=True):
             "source_fresh": fresh,
             "received": received,
             "last_message_time_ns": received * 1_000_000_000 + 5,
+            "error": "",
+        },
+        "received": received,
+    }
+
+
+def _pose_outputs(received=4, *, fresh=True, x=2.0, y=3.0):
+    message = {
+        "header": {"stamp": {"sec": received, "nanosec": 5}, "frame_id": "odom"},
+        "child_frame_id": "base_link",
+        "pose": {
+            "pose": {
+                "position": {"x": x, "y": y, "z": 0.0},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            }
+        },
+    }
+    return {
+        "running": True,
+        "message": message,
+        "messages": [message],
+        "status": {
+            "state": "ready" if fresh else "stale",
+            "source_fresh": fresh,
+            "received": received,
             "error": "",
         },
         "received": received,
@@ -61,6 +97,7 @@ def test_viewer_registers_as_generic_live_spatial_node():
     assert fn._bn_component == "spatial-processing"
     assert fn._bn_live_capable is True
     assert fn._bn_input_types["source"] == "Dict"
+    assert fn._bn_input_types["pose"] == "Dict"
     assert fn._bn_input_types["accumulate_hits"] == "Bool"
     assert "clear" in fn._bn_input_choices["action"]
     assert fn._bn_output_types["scene"] == "Dict"
@@ -69,6 +106,71 @@ def test_viewer_registers_as_generic_live_spatial_node():
 
 
 def test_editor_viewer_normalizes_stream_and_publishes_live_scene(monkeypatch):
+    viewer_runtime.stop_viewer()
+
+
+def test_viewer_registers_scan_history_with_generic_pose_stream(monkeypatch):
+    viewer_runtime.stop_viewer()
+    captured = {}
+
+    def process(scan, **kwargs):
+        captured["sensor_pose"] = kwargs["sensor_pose"]
+        return _processed(scan, **kwargs)
+
+    def reader(source):
+        return _pose_outputs() if source.get("topic") == "/odom" else _outputs()
+
+    monkeypatch.setattr(warp_points, "process_laser_scan", process)
+    result = _NODE_REGISTRY["Viewer"]({
+        "action": "start",
+        "source": _source(),
+        "pose": _pose_source(),
+        "viewer_id": "registered",
+        "mode": "editor",
+        "device": "cpu",
+        "sensor_x_m": 0.25,
+        "__message_stream_reader__": reader,
+    })
+
+    assert result["live"] is True
+    assert captured["sensor_pose"] == (2.25, 3.0, 0.0)
+    assert result["scene"]["frame"] == "odom"
+    assert result["scene"]["source_frame"] == "laser"
+    assert result["scene"]["history_registered"] is True
+    assert result["scene"]["pose_source"] == "nav_msgs/msg/Odometry"
+    assert result["scene"]["registration"]["child_frame"] == "base_link"
+    assert result["status"]["pose_fresh"] is True
+    viewer_runtime.stop_viewer()
+
+
+def test_viewer_waits_instead_of_accumulating_with_stale_pose(monkeypatch):
+    viewer_runtime.stop_viewer()
+    called = False
+
+    def process(scan, **kwargs):
+        del scan, kwargs
+        nonlocal called
+        called = True
+        return {}
+
+    def reader(source):
+        return _pose_outputs(fresh=False) if source.get("topic") == "/odom" else _outputs()
+
+    monkeypatch.setattr(warp_points, "process_laser_scan", process)
+    result = _NODE_REGISTRY["Viewer"]({
+        "action": "start",
+        "source": _source(),
+        "pose": _pose_source(),
+        "viewer_id": "stale-pose",
+        "mode": "editor",
+        "device": "cpu",
+        "__message_stream_reader__": reader,
+    })
+
+    assert result["live"] is False
+    assert result["status"]["pose_connected"] is True
+    assert result["status"]["pose_fresh"] is False
+    assert called is False
     viewer_runtime.stop_viewer()
     monkeypatch.setattr(warp_points, "process_laser_scan", _processed)
 

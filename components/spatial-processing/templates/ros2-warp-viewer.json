@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Select a paired compute device, subscribe to a ROS 2 LaserScan topic, process each fresh scan with Warp, and inspect the animated ray sweep and bounded scan history in the 3D-orbit Viewer. Set mode=device before deployment to open the native viewer on that device.",
+    "description": "Select a paired compute device, subscribe to scan and pose topics, register each fresh scan with the nearest pose, process it with Warp, and inspect the bounded map in the 3D-orbit Viewer. Set mode=device before deployment to open the native viewer on that device.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
@@ -94,6 +94,55 @@
         "action": ["once", "start", "status", "stop"]
       }
     },
+    "pose": {
+      "id": "pose",
+      "type": "ROS2",
+      "params": {
+        "action": "start",
+        "topic": "/odom",
+        "message_type": "nav_msgs/msg/Odometry",
+        "node_name": "blacknode_ros2_pose",
+        "history": 20,
+        "timeout": 10.0,
+        "stale_after_seconds": 1.0
+      },
+      "pos": [440, 400],
+      "inputs": ["trigger", "device", "action", "topic", "message_type", "node_name", "history", "timeout", "stale_after_seconds"],
+      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "device": "Dict",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "node_name": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "node_name": "blacknode_ros2_topic",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 2.0
+      },
+      "input_choices": {
+        "action": ["once", "start", "status", "stop"]
+      }
+    },
     "viewer": {
       "id": "viewer",
       "type": "Viewer",
@@ -115,14 +164,16 @@
         "show_rays": true,
         "accumulate_hits": true,
         "max_accumulated_points": 50000,
-        "pulse_hz": 1.0
+        "pulse_hz": 1.0,
+        "pose_sync_tolerance_s": 0.25
       },
       "pos": [860, 80],
-      "inputs": ["action", "source", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz"],
+      "inputs": ["action", "source", "pose", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
       "outputs": ["running", "live", "scene", "status", "viewer", "report"],
       "input_types": {
         "action": "Text",
         "source": "Dict",
+        "pose": "Dict",
         "viewer_id": "Text",
         "mode": "Text",
         "processor": "Text",
@@ -139,7 +190,8 @@
         "show_rays": "Bool",
         "accumulate_hits": "Bool",
         "max_accumulated_points": "Int",
-        "pulse_hz": "Float"
+        "pulse_hz": "Float",
+        "pose_sync_tolerance_s": "Float"
       },
       "output_types": {
         "running": "Bool",
@@ -167,7 +219,8 @@
         "show_rays": true,
         "accumulate_hits": true,
         "max_accumulated_points": 50000,
-        "pulse_hz": 1.0
+        "pulse_hz": 1.0,
+        "pose_sync_tolerance_s": 0.25
       },
       "input_choices": {
         "action": ["status", "start", "clear", "stop"],
@@ -179,6 +232,8 @@
   },
   "edges": [
     {"from": "device", "from_port": "device", "to": "ros2", "to_port": "device"},
-    {"from": "ros2", "from_port": "stream", "to": "viewer", "to_port": "source"}
+    {"from": "device", "from_port": "device", "to": "pose", "to_port": "device"},
+    {"from": "ros2", "from_port": "stream", "to": "viewer", "to_port": "source"},
+    {"from": "pose", "from_port": "stream", "to": "viewer", "to_port": "pose"}
   ]
 }

@@ -421,6 +421,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
     inputs={
         "action": Enum(["status", "start", "clear", "stop"], default="status"),
         "source": Dict,
+        "pose": Dict,
         "viewer_id": Text(default="viewer"),
         "mode": Enum(["editor", "device"], default="editor"),
         "processor": Enum(["warp"], default="warp"),
@@ -438,6 +439,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "accumulate_hits": Bool(default=True),
         "max_accumulated_points": Int(default=50_000),
         "pulse_hz": Float(default=1.0),
+        "pose_sync_tolerance_s": Float(default=0.25),
     },
     outputs={
         "running": Bool,
@@ -447,7 +449,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "viewer": Dict,
         "report": Text,
     },
-    primary_inputs=["source", "action", "mode"],
+    primary_inputs=["source", "pose", "action", "mode"],
     primary_outputs=["scene", "status", "report"],
     live=True,
 )
@@ -484,11 +486,13 @@ def viewer(ctx: dict) -> dict:
             "report": "Viewer action must be status, start, clear, or stop",
         }
     source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
+    pose_source = ctx.get("pose") if isinstance(ctx.get("pose"), dict) else {}
     source_reader = ctx.get("__message_stream_reader__")
     return managed_viewer_rt.start_viewer(
         viewer_id=viewer_id,
         node_id=str(ctx.get("__node_id__") or ""),
         source=source,
+        pose_source=pose_source,
         mode=str(ctx.get("mode") or "editor"),
         device=str(ctx.get("device") or "cuda:0"),
         options={
@@ -512,6 +516,10 @@ def viewer(ctx: dict) -> dict:
             ),
             "compare_numpy": False,
             "scan_hz": max(0.05, min(30.0, float(ctx.get("pulse_hz") or 1.0))),
+            "pose_sync_tolerance_s": max(
+                0.01,
+                min(10.0, float(ctx.get("pose_sync_tolerance_s") or 0.25)),
+            ),
         },
         source_reader=source_reader if callable(source_reader) else None,
     )
@@ -612,6 +620,9 @@ def run_viewer_loop(
     accumulated_points: list[Any] = []
     accumulated_colors: list[Any] = []
     accumulated_scan_count = 0
+    active_sensor_pose = sensor_pose
+    active_robot_pose = (0.0, 0.0, 0.0)
+    history_registered = False
     frame = 0
     while renderer.is_running():
         scan = scan_source()
@@ -621,13 +632,29 @@ def run_viewer_loop(
             len(scan.get("ranges") or []),
         ) if isinstance(scan, dict) else None
         if scan and identity != last_identity:
+            viewer_pose = scan.get("viewer_pose") if isinstance(scan.get("viewer_pose"), dict) else {}
+            if viewer_pose:
+                active_sensor_pose = (
+                    float(viewer_pose.get("x_m") or 0.0),
+                    float(viewer_pose.get("y_m") or 0.0),
+                    float(viewer_pose.get("yaw_rad") or 0.0),
+                )
+            else:
+                active_sensor_pose = sensor_pose
+            robot_pose = scan.get("viewer_robot_pose") if isinstance(scan.get("viewer_robot_pose"), dict) else {}
+            active_robot_pose = (
+                float(robot_pose.get("x_m") or 0.0),
+                float(robot_pose.get("y_m") or 0.0),
+                float(robot_pose.get("yaw_rad") or 0.0),
+            )
+            history_registered = bool(scan.get("history_registered"))
             processed = process_laser_scan(
                 scan,
                 device=device,
                 filter_min_m=filter_min_m,
                 filter_max_m=filter_max_m,
                 stride=stride,
-                sensor_pose=sensor_pose,
+                sensor_pose=active_sensor_pose,
                 include_raw_points=show_raw and not compare_numpy,
                 compare_numpy=compare_numpy,
             )
@@ -718,7 +745,7 @@ def run_viewer_loop(
         renderer.begin_frame(frame / max(1, fps))
         renderer.render_sphere(
             "robot_origin",
-            pos=(0.0, 0.0, 0.0),
+            pos=(active_robot_pose[0], active_robot_pose[1], 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
             radius=max(0.04, point_radius * 2.0),
             color=(1.0, 0.35, 0.15),
@@ -742,8 +769,8 @@ def run_viewer_loop(
                 for ring_segment in range(ring_segments):
                     angle = 2.0 * math.pi * ring_segment / ring_segments
                     ring_vertices.append((
-                        sensor_pose[0] + math.cos(angle) * ring_radius,
-                        sensor_pose[1] + math.sin(angle) * ring_radius,
+                        active_sensor_pose[0] + math.cos(angle) * ring_radius,
+                        active_sensor_pose[1] + math.sin(angle) * ring_radius,
                         0.0,
                     ))
                     ring_indices.extend((ring_segment, (ring_segment + 1) % ring_segments))
@@ -794,7 +821,7 @@ def run_viewer_loop(
                 trail_start = max(0, trail_end - max(1, ray_trail_count))
                 ray_vertices: list[tuple[float, float, float] | list[float]] = []
                 ray_indices: list[int] = []
-                origin = (sensor_pose[0], sensor_pose[1], 0.0)
+                origin = (active_sensor_pose[0], active_sensor_pose[1], 0.0)
                 for hit in visible_filtered[trail_start:trail_end]:
                     vertex = len(ray_vertices)
                     ray_vertices.extend((origin, hit))
@@ -837,7 +864,7 @@ def run_viewer_loop(
         renderer.window.set_caption(
             f"{title} | {scan_label} | processed {processed.get('report', {}).get('input_count', 0):,} rays | "
             f"displayed {point_count:,} hits | history {len(accumulated_points):,} from {accumulated_scan_count:,} scans | "
-            f"{comparison_label}{mode_label} | "
+            f"{comparison_label}{mode_label} | {'pose-registered' if history_registered else 'sensor-local'} | "
             "Space: compare  P: pause  R: restart"
         )
         frame += 1
