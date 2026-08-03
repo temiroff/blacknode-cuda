@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Select a paired compute device, subscribe to a ROS 2 LaserScan topic, process each fresh scan with Warp, and show the live point cloud in the Viewer node. Set Viewer mode=device before deploying the workflow to open the native viewer on that device.",
+    "description": "Select a paired compute device, subscribe to a ROS 2 LaserScan topic, process each fresh scan with Warp, and inspect the animated ray sweep and bounded scan history in the 3D-orbit Viewer. Set mode=device before deployment to open the native viewer on that device.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
@@ -110,10 +110,15 @@
         "sensor_y_m": 0.0,
         "sensor_yaw_rad": 0.0,
         "point_radius_m": 0.025,
-        "fps": 30
+        "fps": 30,
+        "animate_scan": true,
+        "show_rays": true,
+        "accumulate_hits": true,
+        "max_accumulated_points": 50000,
+        "pulse_hz": 1.0
       },
       "pos": [860, 80],
-      "inputs": ["action", "source", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps"],
+      "inputs": ["action", "source", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz"],
       "outputs": ["running", "live", "scene", "status", "viewer", "report"],
       "input_types": {
         "action": "Text",
@@ -129,7 +134,12 @@
         "sensor_y_m": "Float",
         "sensor_yaw_rad": "Float",
         "point_radius_m": "Float",
-        "fps": "Int"
+        "fps": "Int",
+        "animate_scan": "Bool",
+        "show_rays": "Bool",
+        "accumulate_hits": "Bool",
+        "max_accumulated_points": "Int",
+        "pulse_hz": "Float"
       },
       "output_types": {
         "running": "Bool",
@@ -152,10 +162,15 @@
         "sensor_y_m": 0.0,
         "sensor_yaw_rad": 0.0,
         "point_radius_m": 0.025,
-        "fps": 30
+        "fps": 30,
+        "animate_scan": true,
+        "show_rays": true,
+        "accumulate_hits": true,
+        "max_accumulated_points": 50000,
+        "pulse_hz": 1.0
       },
       "input_choices": {
-        "action": ["status", "start", "stop"],
+        "action": ["status", "start", "clear", "stop"],
         "mode": ["editor", "device"],
         "processor": ["warp"],
         "device": ["cuda:0", "cpu"]

@@ -419,7 +419,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "editor or in a native OpenGL window on the machine running the graph."
     ),
     inputs={
-        "action": Enum(["status", "start", "stop"], default="status"),
+        "action": Enum(["status", "start", "clear", "stop"], default="status"),
         "source": Dict,
         "viewer_id": Text(default="viewer"),
         "mode": Enum(["editor", "device"], default="editor"),
@@ -433,6 +433,11 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "sensor_yaw_rad": Float(default=0.0),
         "point_radius_m": Float(default=0.025),
         "fps": Int(default=30),
+        "animate_scan": Bool(default=True),
+        "show_rays": Bool(default=True),
+        "accumulate_hits": Bool(default=True),
+        "max_accumulated_points": Int(default=50_000),
+        "pulse_hz": Float(default=1.0),
     },
     outputs={
         "running": Bool,
@@ -465,6 +470,8 @@ def viewer(ctx: dict) -> dict:
             "viewer": {"viewer_id": viewer_id, "state": "stopped"},
             "report": f"Viewer stopped {int(stopped.get('stopped') or 0)} session(s)",
         }
+    if action == "clear":
+        return managed_viewer_rt.clear_viewer(viewer_id)
     if action == "status":
         return managed_viewer_rt.viewer_status(viewer_id)
     if action != "start":
@@ -472,9 +479,9 @@ def viewer(ctx: dict) -> dict:
             "running": False,
             "live": False,
             "scene": {},
-            "status": {"state": "error", "error": "action must be status, start, or stop"},
+            "status": {"state": "error", "error": "action must be status, start, clear, or stop"},
             "viewer": {},
-            "report": "Viewer action must be status, start, or stop",
+            "report": "Viewer action must be status, start, clear, or stop",
         }
     source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
     source_reader = ctx.get("__message_stream_reader__")
@@ -495,12 +502,16 @@ def viewer(ctx: dict) -> dict:
             "fps": max(1, min(120, int(ctx.get("fps") or 30))),
             "show_raw": False,
             "show_filtered": True,
-            "animate_scan": False,
-            "show_rays": True,
+            "animate_scan": bool(ctx.get("animate_scan", True)),
+            "show_rays": bool(ctx.get("show_rays", True)),
             "ray_trail_count": 96,
-            "accumulate_hits": False,
+            "accumulate_hits": bool(ctx.get("accumulate_hits", True)),
+            "max_accumulated_points": max(
+                1_000,
+                min(250_000, int(ctx.get("max_accumulated_points") or 50_000)),
+            ),
             "compare_numpy": False,
-            "scan_hz": 1.0,
+            "scan_hz": max(0.05, min(30.0, float(ctx.get("pulse_hz") or 1.0))),
         },
         source_reader=source_reader if callable(source_reader) else None,
     )
@@ -523,6 +534,8 @@ def run_viewer_loop(
     show_rays: bool = True,
     ray_trail_count: int = 96,
     accumulate_hits: bool = True,
+    persist_scans: bool = False,
+    max_accumulated_points: int = 50_000,
     compare_numpy: bool = False,
     title: str,
 ) -> None:
@@ -596,6 +609,9 @@ def run_viewer_loop(
     source_points_wp = None
     revealed_points_wp = None
     comparison_colors: dict[str, Any] = {}
+    accumulated_points: list[Any] = []
+    accumulated_colors: list[Any] = []
+    accumulated_scan_count = 0
     frame = 0
     while renderer.is_running():
         scan = scan_source()
@@ -616,6 +632,15 @@ def run_viewer_loop(
                 compare_numpy=compare_numpy,
             )
             filtered_points = processed.get("filtered_points") or []
+            filtered_colors = processed.get("colors") or []
+            if persist_scans and filtered_points:
+                accumulated_points.extend(filtered_points)
+                accumulated_colors.extend(filtered_colors)
+                maximum = max(1_000, min(250_000, int(max_accumulated_points)))
+                if len(accumulated_points) > maximum:
+                    del accumulated_points[:len(accumulated_points) - maximum]
+                    del accumulated_colors[:len(accumulated_colors) - maximum]
+                accumulated_scan_count += 1
             if accumulate_hits and filtered_points:
                 source_points_wp = wp.array(
                     np.asarray(filtered_points, dtype=np.float32),
@@ -698,6 +723,37 @@ def run_viewer_loop(
             radius=max(0.04, point_radius * 2.0),
             color=(1.0, 0.35, 0.15),
         )
+        if persist_scans and accumulated_points:
+            renderer.render_points(
+                "real_scan_history",
+                accumulated_points,
+                radius=point_radius,
+                colors=[(0.04, 0.36, 0.48)] * len(accumulated_points),
+                as_spheres=False,
+                visible=True,
+            )
+        if animate_scan and phase > 0.0:
+            for ring_index, ring_offset in enumerate((0.0, 0.22, 0.44)):
+                ring_phase = (phase - ring_offset) % 1.0
+                ring_radius = max(0.02, filter_max_m * ring_phase)
+                ring_vertices = []
+                ring_indices = []
+                ring_segments = 72
+                for ring_segment in range(ring_segments):
+                    angle = 2.0 * math.pi * ring_segment / ring_segments
+                    ring_vertices.append((
+                        sensor_pose[0] + math.cos(angle) * ring_radius,
+                        sensor_pose[1] + math.sin(angle) * ring_radius,
+                        0.0,
+                    ))
+                    ring_indices.extend((ring_segment, (ring_segment + 1) % ring_segments))
+                renderer.render_line_list(
+                    f"real_scan_pulse_{ring_index}",
+                    ring_vertices,
+                    ring_indices,
+                    color=(0.04 + ring_index * 0.03, 0.35, 0.62),
+                    radius=max(0.0015, point_radius * 0.1),
+                )
         if visible_raw:
             renderer.render_points(
                 "raw_lidar",
@@ -780,7 +836,8 @@ def run_viewer_loop(
         )
         renderer.window.set_caption(
             f"{title} | {scan_label} | processed {processed.get('report', {}).get('input_count', 0):,} rays | "
-            f"displayed {point_count:,} hits | {comparison_label}{mode_label} | "
+            f"displayed {point_count:,} hits | history {len(accumulated_points):,} from {accumulated_scan_count:,} scans | "
+            f"{comparison_label}{mode_label} | "
             "Space: compare  P: pause  R: restart"
         )
         frame += 1

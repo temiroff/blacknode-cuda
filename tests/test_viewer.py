@@ -61,6 +61,8 @@ def test_viewer_registers_as_generic_live_spatial_node():
     assert fn._bn_component == "spatial-processing"
     assert fn._bn_live_capable is True
     assert fn._bn_input_types["source"] == "Dict"
+    assert fn._bn_input_types["accumulate_hits"] == "Bool"
+    assert "clear" in fn._bn_input_choices["action"]
     assert fn._bn_output_types["scene"] == "Dict"
     assert _NODE_REGISTRY["WarpLiDARViewer"]._bn_hidden is True
     assert _NODE_REGISTRY["WarpSLAMDiscoveryViewer"]._bn_hidden is True
@@ -89,10 +91,43 @@ def test_editor_viewer_normalizes_stream_and_publishes_live_scene(monkeypatch):
     assert result["scene"]["sensor"] == {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0}
     assert result["scene"]["scan"]["angle_max_rad"] == 1.0
     assert result["scene"]["view"] == {"radius_m": 12.0, "units": "meters"}
+    assert result["scene"]["animation"]["show_rays"] is True
+    assert result["scene"]["current_point_count"] == 2
+    assert result["scene"]["accumulated_scan_count"] == 1
     assert result["status"]["kernel_ms"] == 0.25
     assert runtime["node_outputs"][0]["node_id"] == "viewer-node"
     assert runtime["node_outputs"][0]["outputs"]["scene"]["sequence"] == 4
 
+    viewer_runtime.stop_viewer()
+
+
+def test_viewer_accumulates_real_scans_and_clears_history(monkeypatch):
+    viewer_runtime.stop_viewer()
+    monkeypatch.setattr(warp_points, "process_laser_scan", _processed)
+    state = {"received": 1}
+
+    def reader(_source_value):
+        return _outputs(state["received"])
+
+    _NODE_REGISTRY["Viewer"]({
+        "action": "start",
+        "source": _source(),
+        "viewer_id": "history",
+        "mode": "editor",
+        "device": "cpu",
+        "accumulate_hits": True,
+        "max_accumulated_points": 1000,
+        "__message_stream_reader__": reader,
+    })
+    state["received"] = 2
+    accumulated = viewer_runtime.viewer_status("history")
+    cleared = _NODE_REGISTRY["Viewer"]({"action": "clear", "viewer_id": "history"})
+
+    assert accumulated["scene"]["point_count"] == 4
+    assert accumulated["scene"]["accumulated_scan_count"] == 2
+    assert cleared["scene"]["point_count"] == 2
+    assert cleared["scene"]["accumulated_scan_count"] == 1
+    assert cleared["report"] == "Viewer scan history cleared"
     viewer_runtime.stop_viewer()
 
 

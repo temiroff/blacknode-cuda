@@ -28,6 +28,8 @@ def main() -> int:
     parser.add_argument("--animate-scan", action="store_true")
     parser.add_argument("--show-rays", action="store_true")
     parser.add_argument("--accumulate-hits", action="store_true")
+    parser.add_argument("--persist-scans", action="store_true")
+    parser.add_argument("--max-accumulated-points", type=int, default=50_000)
     parser.add_argument("--compare-numpy", action="store_true")
     parser.add_argument("--watch", action="store_true")
     args = parser.parse_args()
@@ -72,6 +74,8 @@ def main() -> int:
         show_rays=args.show_rays,
         ray_trail_count=max(1, args.ray_trail_count),
         accumulate_hits=args.accumulate_hits,
+        persist_scans=args.persist_scans,
+        max_accumulated_points=max(1_000, min(250_000, args.max_accumulated_points)),
         compare_numpy=args.compare_numpy,
         title="Blacknode LiDAR — animated scan",
     )

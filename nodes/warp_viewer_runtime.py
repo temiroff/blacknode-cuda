@@ -101,6 +101,7 @@ def start_viewer(*, viewer_id: str, scan: dict, options: dict[str, Any]) -> dict
         "--fps", str(options.get("fps", 30)),
         "--scan-hz", str(options.get("scan_hz", 0.25)),
         "--ray-trail-count", str(options.get("ray_trail_count", 96)),
+        "--max-accumulated-points", str(options.get("max_accumulated_points", 50_000)),
     ]
     if options.get("show_raw", True):
         arguments.append("--show-raw")
@@ -112,6 +113,7 @@ def start_viewer(*, viewer_id: str, scan: dict, options: dict[str, Any]) -> dict
         arguments.append("--show-rays")
     if options.get("accumulate_hits", True):
         arguments.append("--accumulate-hits")
+        arguments.append("--persist-scans")
     if options.get("compare_numpy", False):
         arguments.append("--compare-numpy")
     if options.get("live", False):

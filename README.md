@@ -22,7 +22,7 @@ Use **Packages → blacknode-cuda → Install prerequisites** after installation
 | `spatial-processing` | On | `Viewer`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
-`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a message stream, processes LaserScan messages with Warp, and renders in the editor or in a native OpenGL window. The editor view includes a meter grid, sensor pose, scan field of view, pan, zoom, and rotation. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
+`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a message stream, processes LaserScan messages with Warp, and renders in the editor or in a native OpenGL window. The view provides 3D orbit controls, meter grid, sensor pose, expanding scan pulses, ray sweep, and bounded scan history. LaserScan history stays in the sensor frame until an odometry pose is connected. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
 
 ## Included workflows
 

@@ -109,12 +109,16 @@ def _scene_from_processed(
     scan: dict[str, Any],
     source_outputs: dict[str, Any],
     options: dict[str, Any],
+    history_points: list[Any],
+    history_colors: list[Any],
+    accumulated_scan_count: int,
 ) -> dict[str, Any]:
-    points = list(processed.get("filtered_points") or [])
-    colors = list(processed.get("colors") or [])
-    display_stride = max(1, math.ceil(len(points) / _MAX_EDITOR_POINTS))
-    display_points = points[::display_stride]
-    display_colors = colors[::display_stride]
+    current_points = list(processed.get("filtered_points") or [])
+    current_colors = list(processed.get("colors") or [])
+    display_stride = max(1, math.ceil(len(history_points) / _MAX_EDITOR_POINTS))
+    current_stride = max(1, math.ceil(len(current_points) / _MAX_EDITOR_POINTS))
+    display_points = history_points[::display_stride]
+    display_colors = history_colors[::display_stride]
     return {
         "kind": "blacknode.viewer-scene",
         "schema_version": 1,
@@ -141,12 +145,52 @@ def _scene_from_processed(
         },
         "points": display_points,
         "colors": display_colors,
-        "point_count": len(points),
+        "current_points": current_points[::current_stride],
+        "current_colors": current_colors[::current_stride],
+        "point_count": len(history_points),
+        "current_point_count": len(current_points),
+        "accumulated_scan_count": accumulated_scan_count,
         "display_count": len(display_points),
         "display_stride": display_stride,
+        "history_registered": False,
+        "pose_source": "sensor-local",
+        "animation": {
+            "enabled": bool(options.get("animate_scan", True)),
+            "show_rays": bool(options.get("show_rays", True)),
+            "ray_trail_count": int(options.get("ray_trail_count") or 96),
+            "pulse_hz": float(options.get("scan_hz") or 1.0),
+            "accumulate_hits": bool(options.get("accumulate_hits", True)),
+        },
         "device": str(processed.get("device") or ""),
         "kernel_ms": float(processed.get("kernel_ms") or 0.0),
     }
+
+
+def _append_scan_history(
+    session: dict[str, Any],
+    processed: dict[str, Any],
+) -> tuple[list[Any], list[Any], int]:
+    points = list(processed.get("filtered_points") or [])
+    colors = list(processed.get("colors") or [])
+    if len(colors) < len(points):
+        colors.extend([[0.0, 0.78, 1.0]] * (len(points) - len(colors)))
+    options = session["options"]
+    if not options.get("accumulate_hits", True):
+        session["history_points"] = points
+        session["history_colors"] = colors
+        session["accumulated_scan_count"] = 1 if points else 0
+        return points, colors, int(session["accumulated_scan_count"])
+
+    history_points = session.setdefault("history_points", [])
+    history_colors = session.setdefault("history_colors", [])
+    history_points.extend(points)
+    history_colors.extend(colors[:len(points)])
+    maximum = max(1_000, min(250_000, int(options.get("max_accumulated_points") or 50_000)))
+    if len(history_points) > maximum:
+        del history_points[:len(history_points) - maximum]
+        del history_colors[:len(history_colors) - maximum]
+    session["accumulated_scan_count"] = int(session.get("accumulated_scan_count") or 0) + 1
+    return history_points, history_colors, int(session["accumulated_scan_count"])
 
 
 def _update_session(session: dict[str, Any]) -> None:
@@ -240,7 +284,19 @@ def _update_session(session: dict[str, Any]) -> None:
         )
         return
 
-    scene = _scene_from_processed(processed, scan, source_outputs, options)
+    history_points, history_colors, accumulated_scan_count = _append_scan_history(
+        session,
+        processed,
+    )
+    scene = _scene_from_processed(
+        processed,
+        scan,
+        source_outputs,
+        options,
+        history_points,
+        history_colors,
+        accumulated_scan_count,
+    )
     if session["mode"] == "device":
         native = session.get("native") if isinstance(session.get("native"), dict) else {}
         if not native.get("running"):
@@ -283,12 +339,15 @@ def _update_session(session: dict[str, Any]) -> None:
             "source_fresh": True,
             "received": int(source_outputs.get("received") or 0),
             "point_count": int(scene.get("point_count") or 0),
+            "current_point_count": int(scene.get("current_point_count") or 0),
+            "accumulated_scan_count": int(scene.get("accumulated_scan_count") or 0),
             "kernel_ms": float(scene.get("kernel_ms") or 0.0),
             "error": "",
         },
         report=(
-            f"Viewer {session['mode']} rendered {int(scene.get('point_count') or 0):,} "
-            f"points with Warp in {float(scene.get('kernel_ms') or 0.0):.3f} ms"
+            f"Viewer {session['mode']} retained {int(scene.get('point_count') or 0):,} "
+            f"hits from {int(scene.get('accumulated_scan_count') or 0):,} scan(s); "
+            f"Warp {float(scene.get('kernel_ms') or 0.0):.3f} ms"
         ),
     )
 
@@ -318,6 +377,9 @@ def start_viewer(
             "running": False,
             "live": False,
             "scene": {},
+            "history_points": [],
+            "history_colors": [],
+            "accumulated_scan_count": 0,
             "status": {"state": "error", "error": "viewer_id is required"},
             "viewer": {},
             "report": "viewer_id is required",
@@ -397,6 +459,25 @@ def viewer_status(viewer_id: str) -> dict[str, Any]:
                 "report": "Viewer is stopped",
             }
         _update_session(session)
+        return _viewer_outputs(session)
+
+
+def clear_viewer(viewer_id: str) -> dict[str, Any]:
+    clean_id = _safe_id(viewer_id)
+    with _LOCK:
+        session = _SESSIONS.get(clean_id)
+        if session is None:
+            return viewer_status(clean_id)
+        session["history_points"] = []
+        session["history_colors"] = []
+        session["accumulated_scan_count"] = 0
+        session["source_marker"] = None
+        session["scene"] = {}
+        if session.get("mode") == "device":
+            warp_viewer_runtime.stop_viewer(clean_id)
+            session["native"] = {}
+        _update_session(session)
+        session["report"] = "Viewer scan history cleared"
         return _viewer_outputs(session)
 
 
