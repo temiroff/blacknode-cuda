@@ -115,7 +115,7 @@ def test_static_viewer_node_uses_managed_runtime(monkeypatch):
         "action": "start",
         "viewer_id": "static",
         "laser_scan": _scan(),
-        "device": "cpu",
+        "device": "cuda:0",
         "animate_scan": True,
         "scan_hz": 0.4,
         "show_rays": True,
@@ -134,6 +134,26 @@ def test_static_viewer_node_uses_managed_runtime(monkeypatch):
     assert captured["options"]["accumulate_hits"] is False
     assert captured["options"]["compare_numpy"] is True
     assert result["viewer"]["controls"]["p"] == "pause or resume scan sweep"
+
+
+def test_static_viewer_rejects_cpu_before_launch(monkeypatch):
+    launched = False
+
+    def fake_popen(*_args, **_kwargs):
+        nonlocal launched
+        launched = True
+        raise AssertionError("CPU viewer must not launch an unsafe OpenGL worker")
+
+    monkeypatch.setattr(warp_viewer_runtime.subprocess, "Popen", fake_popen)
+    result = warp_viewer_runtime.start_viewer(
+        viewer_id="cpu_viewer",
+        scan=_scan(),
+        options={"device": "cpu"},
+    )
+
+    assert result["ok"] is False
+    assert "requires a CUDA device" in result["error"]
+    assert launched is False
 
 
 def test_dense_scan_viewer_uses_file_handoff_instead_of_command_payload(monkeypatch):
@@ -162,7 +182,7 @@ def test_dense_scan_viewer_uses_file_handoff_instead_of_command_payload(monkeypa
     result = warp_viewer_runtime.start_viewer(
         viewer_id="dense_handoff",
         scan=scan,
-        options={"device": "cpu", "animate_scan": True, "show_rays": True},
+        options={"device": "cuda:0", "animate_scan": True, "show_rays": True},
     )
 
     try:

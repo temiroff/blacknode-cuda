@@ -59,6 +59,15 @@ def start_viewer(*, viewer_id: str, scan: dict, options: dict[str, Any]) -> dict
         return {"ok": False, "error": "viewer_id is required"}
     if scan.get("kind") != "blacknode.laser-scan-stream":
         return {"ok": False, "error": "laser_scan must be a blacknode.laser-scan-stream"}
+    device = str(options.get("device") or "cuda:0").strip()
+    if device == "cpu":
+        return {
+            "ok": False,
+            "error": (
+                "WarpLiDARViewer requires a CUDA device for its native OpenGL window; "
+                "use device=cuda:0. WarpLaserScanFilter still supports device=cpu."
+            ),
+        }
     stop_viewer(clean_id)
     script = Path(__file__).resolve().parents[1] / "scripts" / "warp_lidar_viewer.py"
     if not script.is_file():
@@ -81,7 +90,7 @@ def start_viewer(*, viewer_id: str, scan: dict, options: dict[str, Any]) -> dict
         sys.executable,
         str(script),
         "--scan-file", str(scan_path),
-        "--device", str(options.get("device") or "cuda:0"),
+        "--device", device,
         "--filter-min", str(options.get("filter_min_m", 0.1)),
         "--filter-max", str(options.get("filter_max_m", 12.0)),
         "--stride", str(options.get("stride", 1)),
