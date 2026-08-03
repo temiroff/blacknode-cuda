@@ -108,6 +108,7 @@ def _scene_from_processed(
     processed: dict[str, Any],
     scan: dict[str, Any],
     source_outputs: dict[str, Any],
+    options: dict[str, Any],
 ) -> dict[str, Any]:
     points = list(processed.get("filtered_points") or [])
     colors = list(processed.get("colors") or [])
@@ -123,6 +124,21 @@ def _scene_from_processed(
         "source_time_ns": int(scan.get("source_time_ns") or 0),
         "receive_time_ns": int(scan.get("receive_time_ns") or 0),
         "sequence": int(source_outputs.get("received") or 0),
+        "sensor": {
+            "x_m": float(options.get("sensor_x_m") or 0.0),
+            "y_m": float(options.get("sensor_y_m") or 0.0),
+            "yaw_rad": float(options.get("sensor_yaw_rad") or 0.0),
+        },
+        "scan": {
+            "angle_min_rad": float(scan.get("angle_min") or 0.0),
+            "angle_max_rad": float(scan.get("angle_max") or 0.0),
+            "range_min_m": float(scan.get("range_min") or 0.0),
+            "range_max_m": float(scan.get("range_max") or 0.0),
+        },
+        "view": {
+            "radius_m": max(0.1, float(options.get("filter_max_m") or 12.0)),
+            "units": "meters",
+        },
         "points": display_points,
         "colors": display_colors,
         "point_count": len(points),
@@ -224,7 +240,7 @@ def _update_session(session: dict[str, Any]) -> None:
         )
         return
 
-    scene = _scene_from_processed(processed, scan, source_outputs)
+    scene = _scene_from_processed(processed, scan, source_outputs, options)
     if session["mode"] == "device":
         native = session.get("native") if isinstance(session.get("native"), dict) else {}
         if not native.get("running"):

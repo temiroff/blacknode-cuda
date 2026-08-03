@@ -86,6 +86,9 @@ def test_editor_viewer_normalizes_stream_and_publishes_live_scene(monkeypatch):
     assert result["scene"]["kind"] == "blacknode.viewer-scene"
     assert result["scene"]["primitive"] == "point-cloud"
     assert result["scene"]["point_count"] == 2
+    assert result["scene"]["sensor"] == {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0}
+    assert result["scene"]["scan"]["angle_max_rad"] == 1.0
+    assert result["scene"]["view"] == {"radius_m": 12.0, "units": "meters"}
     assert result["status"]["kernel_ms"] == 0.25
     assert runtime["node_outputs"][0]["node_id"] == "viewer-node"
     assert runtime["node_outputs"][0]["outputs"]["scene"]["sequence"] == 4
