@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-cuda"
-version = "0.2.0"
+version = "0.3.0"
 description = "GPU capability checks, image processing, tensor operations, and optional benchmarks."
 requires-blacknode = ">=0.1.0"
 layer = "compute"
@@ -10,8 +10,8 @@ component-mode = true
 "NVIDIA CUDA" = "#76b900"
 
 [dependencies]
-pip = ["cupy-cuda12x[ctk]>=13", "numpy>=1.24", "pillow>=10", "opencv-python>=4.8"]
-imports = ["numpy", "PIL", "cupy", "cv2"]
+pip = ["cupy-cuda12x[ctk]>=13", "numpy>=1.24", "pillow>=10", "opencv-python>=4.8", "warp-lang>=1.15,<2", "pyglet>=2.0"]
+imports = ["numpy", "PIL", "cupy", "cv2", "warp", "pyglet"]
 
 [components.capability]
 description = "GPU, driver, and CUDA toolkit detection and preflight."
@@ -40,6 +40,14 @@ templates = ["components/tensor-operations/templates"]
 
 node-types = [
   "CUTLASS", "TensorCoreGEMM"
+]
+
+[components.spatial-processing]
+description = "Warp point filtering, coordinate transforms, distance coloring, and interactive LiDAR visualization."
+default = true
+capabilities = ["compute.warp.spatial"]
+node-types = [
+  "WarpLaserScanFilter", "WarpLiDARViewer", "WarpSLAMDiscoveryViewer"
 ]
 
 [components.benchmarks]

@@ -38,6 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ./core pytest
           python -m pip install "numpy>=1.24" "pillow>=10" "opencv-python>=4.8"
+          python -m pip install "warp-lang>=1.15,<2" "pyglet>=2.0"
           # cupy-cuda12x is skipped on purpose: no GPU on the runner, and the
           # GPU tests guard their own import and skip.
       - name: Link package into Blacknode

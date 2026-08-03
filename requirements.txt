@@ -6,3 +6,6 @@ pillow>=10
 # CUDAImageFilterStream's background relay (scripts/cuda_filter_stream_server.py)
 # uses OpenCV to decode/encode MJPEG frames, same as blacknode-vision's stream servers.
 opencv-python>=4.8
+# Warp spatial-processing kernels and the interactive development viewer.
+warp-lang>=1.15,<2
+pyglet>=2.0

@@ -13,6 +13,7 @@ error instead of raising, so the editor stays usable.
 from __future__ import annotations
 
 import math
+import os
 import re
 import subprocess
 import time
@@ -1520,11 +1521,28 @@ extern "C" __global__ void wmma_gemm(const half* A, const half* B, float* C, int
 _WMMA_KERNEL = None
 
 
+def _wmma_compile_options() -> tuple[str, ...]:
+    options = ["--std=c++17"]
+    for variable in ("CUDA_PATH", "CUDA_HOME"):
+        cuda_root = os.environ.get(variable)
+        if not cuda_root:
+            continue
+        include_path = os.path.join(cuda_root, "include")
+        if os.path.isfile(os.path.join(include_path, "crt", "mma.h")):
+            options.append(f"--include-path={include_path}")
+            break
+    return tuple(options)
+
+
 def _wmma_kernel():
     global _WMMA_KERNEL
     if _WMMA_KERNEL is None:
         import cupy as cp
-        _WMMA_KERNEL = cp.RawKernel(_WMMA_GEMM_SRC, "wmma_gemm", options=("--std=c++17",))
+        _WMMA_KERNEL = cp.RawKernel(
+            _WMMA_GEMM_SRC,
+            "wmma_gemm",
+            options=_wmma_compile_options(),
+        )
     return _WMMA_KERNEL
 
 
