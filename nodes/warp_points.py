@@ -422,6 +422,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "action": Enum(["status", "start", "clear", "pause", "resume", "stop"], default="status"),
         "source": Dict,
         "pose": Dict,
+        "pose_static": Dict,
         "pose_parent_frame": Text(default="odom"),
         "pose_child_frame": Text(default="auto"),
         "viewer_id": Text(default="viewer"),
@@ -493,12 +494,14 @@ def viewer(ctx: dict) -> dict:
         }
     source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
     pose_source = ctx.get("pose") if isinstance(ctx.get("pose"), dict) else {}
+    pose_static_source = ctx.get("pose_static") if isinstance(ctx.get("pose_static"), dict) else {}
     source_reader = ctx.get("__message_stream_reader__")
     return managed_viewer_rt.start_viewer(
         viewer_id=viewer_id,
         node_id=str(ctx.get("__node_id__") or ""),
         source=source,
         pose_source=pose_source,
+        pose_static_source=pose_static_source,
         mode=str(ctx.get("mode") or "editor"),
         device=str(ctx.get("device") or "cuda:0"),
         options={

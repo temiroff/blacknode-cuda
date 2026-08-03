@@ -542,6 +542,21 @@ def _update_session(session: dict[str, Any]) -> None:
         pose_fresh = bool(pose_status.get("source_fresh"))
         pose_error = str(pose_status.get("error") or "").strip()
         if pose_fresh:
+            pose_static_source = session.get("pose_static_source") if isinstance(session.get("pose_static_source"), dict) else {}
+            if pose_static_source:
+                try:
+                    static_outputs = reader(dict(pose_static_source))
+                except Exception:
+                    static_outputs = {}
+                if isinstance(static_outputs, dict):
+                    pose_outputs = {
+                        **pose_outputs,
+                        "messages": [
+                            *(pose_outputs.get("messages") or []),
+                            *(static_outputs.get("messages") or []),
+                            *([static_outputs.get("message")] if static_outputs.get("message") else []),
+                        ],
+                    }
             pose, pose_error = _normalize_pose(
                 pose_outputs,
                 pose_source,
@@ -708,6 +723,7 @@ def start_viewer(
     node_id: str,
     source: dict[str, Any],
     pose_source: dict[str, Any] | None,
+    pose_static_source: dict[str, Any] | None,
     mode: str,
     device: str,
     options: dict[str, Any],
@@ -744,6 +760,12 @@ def start_viewer(
             "viewer": {},
             "report": "Connect a pose-producing ROS2.stream to Viewer.pose",
         }
+    if pose_static_source and pose_static_source.get("kind") != "blacknode.message-stream":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "pose_static must be a blacknode.message-stream"},
+            "viewer": {}, "report": "Connect ROS2.stream to Viewer.pose_static",
+        }
     selected_mode = str(mode or "editor").strip().lower()
     if selected_mode not in {"editor", "device"}:
         selected_mode = "editor"
@@ -761,6 +783,7 @@ def start_viewer(
             "node_id": str(node_id or ""),
             "source": dict(source),
             "pose_source": dict(pose_source or {}),
+            "pose_static_source": dict(pose_static_source or {}),
             "source_reader": source_reader,
             "mode": selected_mode,
             "device": str(device or "cuda:0"),

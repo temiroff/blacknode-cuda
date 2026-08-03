@@ -40,6 +40,10 @@ def _tf_source():
     }
 
 
+def _tf_static_source():
+    return {**_tf_source(), "stream_id": "topic-subscriber:/tf_static", "topic": "/tf_static"}
+
+
 def _outputs(received=4, *, fresh=True):
     return {
         "running": True,
@@ -102,7 +106,6 @@ def _tf_outputs(received=4):
     message = {"transforms": [
         transform("map", "camera", 99.0, 99.0, 0.0, 1.0),
         transform("odom", "base_link", 1.0, 2.0, 2 ** -0.5, 2 ** -0.5),
-        transform("base_link", "laser", 0.2, 0.0, 2 ** -0.5, 2 ** -0.5),
     ]}
     return {
         "running": True,
@@ -110,6 +113,23 @@ def _tf_outputs(received=4):
         "messages": [message],
         "status": {"state": "ready", "source_fresh": True, "received": received, "error": ""},
         "received": received,
+    }
+
+
+def _tf_static_outputs():
+    message = {"transforms": [{
+        "header": {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": "base_link"},
+        "child_frame_id": "laser",
+        "transform": {
+            "translation": {"x": 0.2, "y": 0.0, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 2 ** -0.5, "w": 2 ** -0.5},
+        },
+    }]}
+    return {
+        "message": message,
+        "messages": [message],
+        "status": {"state": "stale", "source_fresh": False, "received": 1, "error": ""},
+        "received": 1,
     }
 def _processed(scan, **kwargs):
     assert scan["kind"] == "blacknode.laser-scan-stream"
@@ -194,13 +214,18 @@ def test_viewer_resolves_multihop_tf_to_scan_frame_and_uses_tf_forward(monkeypat
         return _processed(scan, **kwargs)
 
     def reader(source):
-        return _tf_outputs() if source.get("topic") == "/tf" else _outputs()
+        if source.get("topic") == "/tf":
+            return _tf_outputs()
+        if source.get("topic") == "/tf_static":
+            return _tf_static_outputs()
+        return _outputs()
 
     monkeypatch.setattr(warp_points, "process_laser_scan", process)
     result = _NODE_REGISTRY["Viewer"]({
         "action": "start",
         "source": _source(),
         "pose": _tf_source(),
+        "pose_static": _tf_static_source(),
         "pose_parent_frame": "odom",
         "pose_child_frame": "auto",
         "sensor_x_m": 9.0,
