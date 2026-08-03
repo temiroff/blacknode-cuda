@@ -667,12 +667,20 @@ def clear_viewer(viewer_id: str) -> dict[str, Any]:
         session["history_points"] = []
         session["history_colors"] = []
         session["accumulated_scan_count"] = 0
-        session["source_marker"] = None
-        session["scene"] = {}
+        scene = dict(session.get("scene") or {})
+        if scene:
+            scene.update(
+                points=[],
+                colors=[],
+                point_count=0,
+                accumulated_scan_count=0,
+                display_count=0,
+                display_stride=1,
+            )
+        session["scene"] = scene
         if session.get("mode") == "device":
             warp_viewer_runtime.stop_viewer(clean_id)
             session["native"] = {}
-        _update_session(session)
         session["report"] = "Viewer scan history cleared"
         return _viewer_outputs(session)
 

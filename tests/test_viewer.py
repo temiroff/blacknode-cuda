@@ -224,11 +224,18 @@ def test_viewer_accumulates_real_scans_and_clears_history(monkeypatch):
     state["received"] = 2
     accumulated = viewer_runtime.viewer_status("history")
     cleared = _NODE_REGISTRY["Viewer"]({"action": "clear", "viewer_id": "history"})
+    cached = viewer_runtime.viewer_status("history")
+    state["received"] = 3
+    resumed = viewer_runtime.viewer_status("history")
 
     assert accumulated["scene"]["point_count"] == 4
     assert accumulated["scene"]["accumulated_scan_count"] == 2
-    assert cleared["scene"]["point_count"] == 2
-    assert cleared["scene"]["accumulated_scan_count"] == 1
+    assert cleared["scene"]["point_count"] == 0
+    assert cleared["scene"]["current_point_count"] == 2
+    assert cleared["scene"]["accumulated_scan_count"] == 0
+    assert cached["scene"]["point_count"] == 0
+    assert resumed["scene"]["point_count"] == 2
+    assert resumed["scene"]["accumulated_scan_count"] == 1
     assert cleared["report"] == "Viewer scan history cleared"
     viewer_runtime.stop_viewer()
 

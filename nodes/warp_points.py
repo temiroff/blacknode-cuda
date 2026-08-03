@@ -622,6 +622,8 @@ def run_viewer_loop(
     accumulated_scan_count = 0
     active_sensor_pose = sensor_pose
     active_robot_pose = (0.0, 0.0, 0.0)
+    active_scan_angles = (-math.pi, math.pi)
+    active_scan_range = max(0.1, filter_max_m)
     history_registered = False
     frame = 0
     while renderer.is_running():
@@ -648,6 +650,12 @@ def run_viewer_loop(
                 float(robot_pose.get("yaw_rad") or 0.0),
             )
             history_registered = bool(scan.get("history_registered"))
+            active_scan_angles = (
+                float(scan.get("angle_min") if scan.get("angle_min") is not None else -math.pi),
+                float(scan.get("angle_max") if scan.get("angle_max") is not None else math.pi),
+            )
+            reported_range = float(scan.get("range_max") or filter_max_m)
+            active_scan_range = max(0.1, min(filter_max_m, reported_range))
             processed = process_laser_scan(
                 scan,
                 device=device,
@@ -762,18 +770,23 @@ def run_viewer_loop(
         if animate_scan and phase > 0.0:
             for ring_index, ring_offset in enumerate((0.0, 0.22, 0.44)):
                 ring_phase = (phase - ring_offset) % 1.0
-                ring_radius = max(0.02, filter_max_m * ring_phase)
+                ring_radius = max(0.02, active_scan_range * ring_phase)
                 ring_vertices = []
                 ring_indices = []
-                ring_segments = 72
-                for ring_segment in range(ring_segments):
-                    angle = 2.0 * math.pi * ring_segment / ring_segments
+                angle_span = max(
+                    -2.0 * math.pi,
+                    min(2.0 * math.pi, active_scan_angles[1] - active_scan_angles[0]),
+                )
+                ring_segments = max(8, math.ceil(72 * abs(angle_span) / (2.0 * math.pi)))
+                for ring_segment in range(ring_segments + 1):
+                    angle = active_sensor_pose[2] + active_scan_angles[0] + angle_span * ring_segment / ring_segments
                     ring_vertices.append((
                         active_sensor_pose[0] + math.cos(angle) * ring_radius,
                         active_sensor_pose[1] + math.sin(angle) * ring_radius,
                         0.0,
                     ))
-                    ring_indices.extend((ring_segment, (ring_segment + 1) % ring_segments))
+                    if ring_segment:
+                        ring_indices.extend((ring_segment - 1, ring_segment))
                 renderer.render_line_list(
                     f"real_scan_pulse_{ring_index}",
                     ring_vertices,
