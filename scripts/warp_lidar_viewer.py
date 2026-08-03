@@ -29,20 +29,35 @@ def main() -> int:
     parser.add_argument("--show-rays", action="store_true")
     parser.add_argument("--accumulate-hits", action="store_true")
     parser.add_argument("--compare-numpy", action="store_true")
+    parser.add_argument("--watch", action="store_true")
     args = parser.parse_args()
 
     if args.scan_file:
         scan_path = Path(args.scan_file)
-        try:
-            scan = json.loads(scan_path.read_text(encoding="utf-8"))
-        finally:
+        scan = json.loads(scan_path.read_text(encoding="utf-8"))
+        if not args.watch:
             scan_path.unlink(missing_ok=True)
     else:
+        scan_path = None
         scan = json.loads(base64.urlsafe_b64decode(args.scan_base64.encode("ascii")).decode("utf-8"))
+
+    latest_scan = scan
+
+    def scan_source():
+        nonlocal latest_scan
+        if args.watch and scan_path is not None:
+            try:
+                candidate = json.loads(scan_path.read_text(encoding="utf-8"))
+                if isinstance(candidate, dict):
+                    latest_scan = candidate
+            except (OSError, json.JSONDecodeError):
+                pass
+        return latest_scan
+
     import blacknode  # noqa: F401 - installs stable extension-package aliases
     from blacknode.pkg.blacknode_cuda import warp_points
     warp_points.run_viewer_loop(
-        scan_source=lambda: scan,
+        scan_source=scan_source,
         device=args.device,
         filter_min_m=args.filter_min,
         filter_max_m=args.filter_max,
@@ -60,6 +75,8 @@ def main() -> int:
         compare_numpy=args.compare_numpy,
         title="Blacknode LiDAR — animated scan",
     )
+    if args.watch and scan_path is not None:
+        scan_path.unlink(missing_ok=True)
     return 0
 
 

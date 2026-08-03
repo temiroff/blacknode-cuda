@@ -114,6 +114,8 @@ def start_viewer(*, viewer_id: str, scan: dict, options: dict[str, Any]) -> dict
         arguments.append("--accumulate-hits")
     if options.get("compare_numpy", False):
         arguments.append("--compare-numpy")
+    if options.get("live", False):
+        arguments.append("--watch")
     log_dir = Path(tempfile.gettempdir()) / "blacknode-warp-viewers"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{clean_id}.log"
@@ -143,6 +145,33 @@ def start_viewer(*, viewer_id: str, scan: dict, options: dict[str, Any]) -> dict
             "error": "Warp viewer exited during startup" + (f": {detail}" if detail else ""),
         }
     return {"ok": True, "running": True, "viewer_id": clean_id, "log_path": str(log_path)}
+
+
+def update_viewer_scan(viewer_id: str, scan: dict) -> dict[str, Any]:
+    """Atomically replace the handoff read by a live native Viewer worker."""
+    clean_id = _safe_id(viewer_id)
+    item = _VIEWERS.get(clean_id)
+    if not item:
+        return {"ok": False, "error": f"Viewer {clean_id or viewer_id!r} is not running"}
+    proc = item.get("proc")
+    if proc is None or proc.poll() is not None:
+        _VIEWERS.pop(clean_id, None)
+        return {"ok": False, "error": f"Viewer {clean_id!r} has stopped"}
+    raw_scan_path = str(item.get("scan_path") or "")
+    if not raw_scan_path:
+        return {"ok": False, "error": f"Viewer {clean_id!r} has no scan handoff"}
+    scan_path = Path(raw_scan_path)
+    temporary = scan_path.with_suffix(f"{scan_path.suffix}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(scan, allow_nan=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, scan_path)
+    except Exception as exc:
+        temporary.unlink(missing_ok=True)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "updated": True, "viewer_id": clean_id}
 
 
 def start_slam_viewer(*, viewer_id: str, config: dict[str, Any], device: str) -> dict[str, Any]:

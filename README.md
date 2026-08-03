@@ -19,16 +19,17 @@ Use **Packages → blacknode-cuda → Install prerequisites** after installation
 | `capability` | On | `GPUCapability`, `GPURequirement` |
 | `image-processing` | On | `CUDAImageFilter`, `CUDAImageFilterStream` |
 | `tensor-operations` | On | `TensorCoreGEMM`, `CUTLASS` |
-| `spatial-processing` | On | `WarpLaserScanFilter`, `WarpLiDARViewer`, `WarpSLAMDiscoveryViewer` |
+| `spatial-processing` | On | `Viewer`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
-`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` starts or updates one managed MJPEG filter service; frames continue without graph recooks. Warp nodes convert and filter LaserScan data, transform points, and provide interactive LiDAR/SLAM development views.
+`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a message stream, processes LaserScan messages with Warp, and renders in the editor or in a native OpenGL window. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
 
 ## Included workflows
 
 - GPU image filtering and live filter streaming
 - CUTLASS image and sustained GEMM examples
 - LiDAR starter workflows supplied by `blacknode-perception`, which owns the normalized sensor contract
+- ROS 2 device stream to the generic live `Viewer`
 
 Select `cpu` for portable Warp verification or `cuda:0` for GPU execution. Enable `compare_numpy` when a warmed correctness and timing comparison is needed. Benchmarks report the device, data shape/type, warmup conditions, synchronized timing, and correctness result.
 

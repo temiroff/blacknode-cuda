@@ -19,6 +19,11 @@ except Exception:  # pragma: no cover - package must still load without Warp
 from blacknode.node import Bool, Dict, Enum, Float, Int, List, Text, node
 
 from . import warp_viewer_runtime as viewer_rt
+from . import viewer_runtime as managed_viewer_rt
+
+
+runtime_status = managed_viewer_rt.runtime_status
+stop_runtime_services = managed_viewer_rt.stop_runtime_services
 
 
 _CATEGORY = "NVIDIA CUDA"
@@ -405,6 +410,102 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
     )
 
 
+@node(
+    name="Viewer",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description=(
+        "Render a managed message stream as a live Warp point cloud inside the "
+        "editor or in a native OpenGL window on the machine running the graph."
+    ),
+    inputs={
+        "action": Enum(["status", "start", "stop"], default="status"),
+        "source": Dict,
+        "viewer_id": Text(default="viewer"),
+        "mode": Enum(["editor", "device"], default="editor"),
+        "processor": Enum(["warp"], default="warp"),
+        "device": Enum(["cuda:0", "cpu"], default="cuda:0"),
+        "filter_min_m": Float(default=0.1),
+        "filter_max_m": Float(default=12.0),
+        "downsample_stride": Int(default=1),
+        "sensor_x_m": Float(default=0.0),
+        "sensor_y_m": Float(default=0.0),
+        "sensor_yaw_rad": Float(default=0.0),
+        "point_radius_m": Float(default=0.025),
+        "fps": Int(default=30),
+    },
+    outputs={
+        "running": Bool,
+        "live": Bool,
+        "scene": Dict,
+        "status": Dict,
+        "viewer": Dict,
+        "report": Text,
+    },
+    primary_inputs=["source", "action", "mode"],
+    primary_outputs=["scene", "status", "report"],
+    live=True,
+)
+def viewer(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "status").strip().lower()
+    viewer_id = str(ctx.get("viewer_id") or "viewer").strip()
+    if action == "stop":
+        stopped = managed_viewer_rt.stop_viewer(viewer_id)
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "status": {
+                "kind": "blacknode.viewer-status",
+                "schema_version": 1,
+                "state": "stopped",
+                "source_fresh": False,
+                "error": "",
+            },
+            "viewer": {"viewer_id": viewer_id, "state": "stopped"},
+            "report": f"Viewer stopped {int(stopped.get('stopped') or 0)} session(s)",
+        }
+    if action == "status":
+        return managed_viewer_rt.viewer_status(viewer_id)
+    if action != "start":
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "status": {"state": "error", "error": "action must be status, start, or stop"},
+            "viewer": {},
+            "report": "Viewer action must be status, start, or stop",
+        }
+    source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
+    source_reader = ctx.get("__message_stream_reader__")
+    return managed_viewer_rt.start_viewer(
+        viewer_id=viewer_id,
+        node_id=str(ctx.get("__node_id__") or ""),
+        source=source,
+        mode=str(ctx.get("mode") or "editor"),
+        device=str(ctx.get("device") or "cuda:0"),
+        options={
+            "filter_min_m": max(0.0, float(ctx.get("filter_min_m") or 0.1)),
+            "filter_max_m": max(0.0, float(ctx.get("filter_max_m") or 12.0)),
+            "stride": max(1, int(ctx.get("downsample_stride") or 1)),
+            "sensor_x_m": float(ctx.get("sensor_x_m") or 0.0),
+            "sensor_y_m": float(ctx.get("sensor_y_m") or 0.0),
+            "sensor_yaw_rad": float(ctx.get("sensor_yaw_rad") or 0.0),
+            "point_radius_m": max(0.001, float(ctx.get("point_radius_m") or 0.025)),
+            "fps": max(1, min(120, int(ctx.get("fps") or 30))),
+            "show_raw": False,
+            "show_filtered": True,
+            "animate_scan": False,
+            "show_rays": True,
+            "ray_trail_count": 96,
+            "accumulate_hits": False,
+            "compare_numpy": False,
+            "scan_hz": 1.0,
+        },
+        source_reader=source_reader if callable(source_reader) else None,
+    )
+
+
 def run_viewer_loop(
     *,
     scan_source: Callable[[], dict],
@@ -688,6 +789,7 @@ def run_viewer_loop(
 
 @node(
     name="WarpLiDARViewer",
+    hidden=True,
     component="spatial-processing",
     category=_CATEGORY,
     description=(

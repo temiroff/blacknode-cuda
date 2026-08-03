@@ -1226,6 +1226,7 @@ def run_slam_discovery_viewer(*, config: dict[str, Any], device: str) -> None:
 
 @node(
     name="WarpSLAMDiscoveryViewer",
+    hidden=True,
     component="spatial-processing",
     category=_CATEGORY,
     description=(

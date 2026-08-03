@@ -1,0 +1,169 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS2 Warp Viewer",
+  "saved_at": "2026-08-03T00:00:00",
+  "entrypoint": {
+    "node_id": "viewer",
+    "port": "scene"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Select a paired compute device, subscribe to a ROS 2 LaserScan topic, process each fresh scan with Warp, and show the live point cloud in the Viewer node. Set Viewer mode=device before deploying the workflow to open the native viewer on that device.",
+    "color": "#76b900",
+    "required_packages": [
+      "blacknode-robot",
+      "blacknode-ros2",
+      "blacknode-cuda"
+    ]
+  },
+  "node_meta": {
+    "device": {
+      "id": "device",
+      "type": "ComputeDevice",
+      "params": {
+        "device_id": "",
+        "device_name": ""
+      },
+      "pos": [40, 180],
+      "inputs": ["device_id", "device_name", "inspection"],
+      "outputs": ["configured", "inspection_available", "device", "inspection", "report"],
+      "input_types": {
+        "device_id": "Text",
+        "device_name": "Text",
+        "inspection": "Dict"
+      },
+      "output_types": {
+        "configured": "Bool",
+        "inspection_available": "Bool",
+        "device": "Dict",
+        "inspection": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "device_id": "",
+        "device_name": ""
+      }
+    },
+    "ros2": {
+      "id": "ros2",
+      "type": "ROS2",
+      "params": {
+        "action": "start",
+        "topic": "/scan",
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "node_name": "blacknode_ros2_scan",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 1.0
+      },
+      "pos": [440, 120],
+      "inputs": ["trigger", "device", "action", "topic", "message_type", "node_name", "history", "timeout", "stale_after_seconds"],
+      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "device": "Dict",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "node_name": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "node_name": "blacknode_ros2_topic",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 2.0
+      },
+      "input_choices": {
+        "action": ["once", "start", "status", "stop"]
+      }
+    },
+    "viewer": {
+      "id": "viewer",
+      "type": "Viewer",
+      "params": {
+        "action": "start",
+        "viewer_id": "ros2_scan",
+        "mode": "editor",
+        "processor": "warp",
+        "device": "cuda:0",
+        "filter_min_m": 0.1,
+        "filter_max_m": 12.0,
+        "downsample_stride": 1,
+        "sensor_x_m": 0.0,
+        "sensor_y_m": 0.0,
+        "sensor_yaw_rad": 0.0,
+        "point_radius_m": 0.025,
+        "fps": 30
+      },
+      "pos": [860, 80],
+      "inputs": ["action", "source", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps"],
+      "outputs": ["running", "live", "scene", "status", "viewer", "report"],
+      "input_types": {
+        "action": "Text",
+        "source": "Dict",
+        "viewer_id": "Text",
+        "mode": "Text",
+        "processor": "Text",
+        "device": "Text",
+        "filter_min_m": "Float",
+        "filter_max_m": "Float",
+        "downsample_stride": "Int",
+        "sensor_x_m": "Float",
+        "sensor_y_m": "Float",
+        "sensor_yaw_rad": "Float",
+        "point_radius_m": "Float",
+        "fps": "Int"
+      },
+      "output_types": {
+        "running": "Bool",
+        "live": "Bool",
+        "scene": "Dict",
+        "status": "Dict",
+        "viewer": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "viewer_id": "viewer",
+        "mode": "editor",
+        "processor": "warp",
+        "device": "cuda:0",
+        "filter_min_m": 0.1,
+        "filter_max_m": 12.0,
+        "downsample_stride": 1,
+        "sensor_x_m": 0.0,
+        "sensor_y_m": 0.0,
+        "sensor_yaw_rad": 0.0,
+        "point_radius_m": 0.025,
+        "fps": 30
+      },
+      "input_choices": {
+        "action": ["status", "start", "stop"],
+        "mode": ["editor", "device"],
+        "processor": ["warp"],
+        "device": ["cuda:0", "cpu"]
+      }
+    }
+  },
+  "edges": [
+    {"from": "device", "from_port": "device", "to": "ros2", "to_port": "device"},
+    {"from": "ros2", "from_port": "stream", "to": "viewer", "to_port": "source"}
+  ]
+}
