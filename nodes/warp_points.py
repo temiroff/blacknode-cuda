@@ -691,7 +691,7 @@ def run_viewer_loop(
     component="spatial-processing",
     category=_CATEGORY,
     description=(
-        "Start or stop an interactive Warp OpenGL window for one normalized "
+        "Start or stop an interactive CUDA Warp OpenGL window for one normalized "
         "LaserScan, showing raw gray and Warp-filtered cyan points together."
     ),
     inputs={
