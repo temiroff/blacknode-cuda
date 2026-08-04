@@ -230,3 +230,28 @@ def test_slam_uses_stream_counter_when_sensor_timestamp_moves_backwards(monkeypa
     assert result["live"] is True
     assert result["status"]["received"] == 2
     slam_runtime.stop_slam()
+
+
+def test_runtime_status_uses_cached_snapshot_without_running_scan_matching(monkeypatch):
+    snapshot = {
+        "running": True,
+        "live": True,
+        "status": {"state": "ready"},
+        "scene": {"point_count": 12},
+    }
+    session = {"node_id": "slam-node", "snapshot": snapshot}
+    with slam_runtime._LOCK:
+        slam_runtime._SESSIONS["cached-status"] = session
+    monkeypatch.setattr(
+        slam_runtime,
+        "_update_session",
+        lambda _session: (_ for _ in ()).throw(AssertionError("status must not process scans")),
+    )
+    try:
+        runtime = slam_runtime.runtime_status()
+    finally:
+        with slam_runtime._LOCK:
+            slam_runtime._SESSIONS.pop("cached-status", None)
+
+    assert runtime["active"] is True
+    assert runtime["node_outputs"][0]["outputs"] == snapshot

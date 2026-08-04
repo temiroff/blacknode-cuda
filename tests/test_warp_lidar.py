@@ -56,6 +56,19 @@ def test_warp_filter_converts_filters_transforms_and_colors_on_cpu():
     assert result["report"]["implementation"] == "NVIDIA Warp kernel"
 
 
+def test_partial_scan_forward_heading_uses_angular_sector_center():
+    heading = warp_points._scan_forward_yaw(
+        {"angle_min": math.radians(72.0), "angle_max": math.radians(291.0)},
+        0.0,
+    )
+
+    assert abs(math.atan2(math.sin(heading - math.pi), math.cos(heading - math.pi))) < math.radians(2.0)
+    assert warp_points._scan_forward_yaw(
+        {"angle_min": -math.pi, "angle_max": math.pi},
+        0.35,
+    ) == pytest.approx(0.35)
+
+
 def test_warp_filter_downsamples_and_invalid_input_is_structured():
     downsampled = _NODE_REGISTRY["WarpLaserScanFilter"]({
         "laser_scan": _scan(),

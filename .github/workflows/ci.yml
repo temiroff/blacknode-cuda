@@ -26,6 +26,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p core/packages
+          git clone --depth 1 https://github.com/temiroff/blacknode-robot.git core/packages/blacknode-robot
           git clone --depth 1 https://github.com/temiroff/blacknode-ros2.git core/packages/blacknode-ros2
           git clone --depth 1 https://github.com/temiroff/blacknode-perception.git core/packages/blacknode-perception
       - name: Set up Python

@@ -195,6 +195,20 @@ def _numpy_scan_baseline(
     return result, float(np.median(np.asarray(timings, dtype=np.float64)))
 
 
+def _scan_forward_yaw(scan: dict[str, Any], sensor_yaw: float) -> float:
+    """Return the forward heading represented by a scan's angular sector."""
+    angle_min = float(scan.get("angle_min") if scan.get("angle_min") is not None else -math.pi)
+    angle_max = float(scan.get("angle_max") if scan.get("angle_max") is not None else math.pi)
+    coverage = abs(angle_max - angle_min)
+    sector_offset = 0.0 if coverage >= 2.0 * math.pi - math.radians(1.0) else (angle_min + angle_max) * 0.5
+    heading = float(sensor_yaw) + sector_offset
+    return math.atan2(math.sin(heading), math.cos(heading))
+
+
+def _yaw_quaternion(yaw: float) -> tuple[float, float, float, float]:
+    return (0.0, 0.0, math.sin(float(yaw) * 0.5), math.cos(float(yaw) * 0.5))
+
+
 def _error(message: str, *, device: str = "") -> dict[str, Any]:
     return {
         "ok": False,
@@ -761,9 +775,9 @@ def _run_gpu_interop_viewer_loop(
             )
             robot_pose = scan.get("viewer_robot_pose") if isinstance(scan.get("viewer_robot_pose"), dict) else {}
             active_robot_pose = (
-                float(robot_pose.get("x_m") or 0.0),
-                float(robot_pose.get("y_m") or 0.0),
-                float(robot_pose.get("yaw_rad") or 0.0),
+                float(robot_pose.get("x_m") if robot_pose.get("x_m") is not None else active_sensor_pose[0]),
+                float(robot_pose.get("y_m") if robot_pose.get("y_m") is not None else active_sensor_pose[1]),
+                float(robot_pose.get("yaw_rad")) if robot_pose.get("yaw_rad") is not None else _scan_forward_yaw(scan, active_sensor_pose[2]),
             )
             ranges = scan.get("ranges") if isinstance(scan.get("ranges"), list) else []
             ranges_np = np.asarray(ranges[:current_capacity], dtype=np.float32)
@@ -809,12 +823,23 @@ def _run_gpu_interop_viewer_loop(
             last_identity = identity
 
         renderer.begin_frame(frame / max(1, fps))
-        renderer.render_sphere(
+        renderer.render_box(
             "robot_origin",
             pos=(active_robot_pose[0], active_robot_pose[1], 0.0),
-            rot=(0.0, 0.0, 0.0, 1.0),
-            radius=max(0.04, point_radius * 2.0),
+            rot=_yaw_quaternion(active_robot_pose[2]),
+            extents=(0.18, 0.12, 0.05),
             color=(1.0, 0.35, 0.15),
+        )
+        renderer.render_sphere(
+            "robot_front",
+            pos=(
+                active_robot_pose[0] + math.cos(active_robot_pose[2]) * 0.2,
+                active_robot_pose[1] + math.sin(active_robot_pose[2]) * 0.2,
+                0.0,
+            ),
+            rot=(0.0, 0.0, 0.0, 1.0),
+            radius=max(0.025, point_radius * 1.4),
+            color=(1.0, 0.82, 0.12),
         )
         renderer.end_frame()
         renderer.window.set_caption(
@@ -975,9 +1000,9 @@ def run_viewer_loop(
                 active_sensor_pose = sensor_pose
             robot_pose = scan.get("viewer_robot_pose") if isinstance(scan.get("viewer_robot_pose"), dict) else {}
             active_robot_pose = (
-                float(robot_pose.get("x_m") or 0.0),
-                float(robot_pose.get("y_m") or 0.0),
-                float(robot_pose.get("yaw_rad") or 0.0),
+                float(robot_pose.get("x_m") if robot_pose.get("x_m") is not None else active_sensor_pose[0]),
+                float(robot_pose.get("y_m") if robot_pose.get("y_m") is not None else active_sensor_pose[1]),
+                float(robot_pose.get("yaw_rad")) if robot_pose.get("yaw_rad") is not None else _scan_forward_yaw(scan, active_sensor_pose[2]),
             )
             history_registered = bool(scan.get("history_registered"))
             active_scan_angles = (
@@ -1099,12 +1124,23 @@ def run_viewer_loop(
             )
         visible_colors = filtered_colors[:len(visible_filtered)]
         renderer.begin_frame(frame / max(1, fps))
-        renderer.render_sphere(
+        renderer.render_box(
             "robot_origin",
             pos=(active_robot_pose[0], active_robot_pose[1], 0.0),
-            rot=(0.0, 0.0, 0.0, 1.0),
-            radius=max(0.04, point_radius * 2.0),
+            rot=_yaw_quaternion(active_robot_pose[2]),
+            extents=(0.18, 0.12, 0.05),
             color=(1.0, 0.35, 0.15),
+        )
+        renderer.render_sphere(
+            "robot_front",
+            pos=(
+                active_robot_pose[0] + math.cos(active_robot_pose[2]) * 0.2,
+                active_robot_pose[1] + math.sin(active_robot_pose[2]) * 0.2,
+                0.0,
+            ),
+            rot=(0.0, 0.0, 0.0, 1.0),
+            radius=max(0.025, point_radius * 1.4),
+            color=(1.0, 0.82, 0.12),
         )
         if persist_scans and accumulated_points:
             renderer.render_points(

@@ -706,7 +706,10 @@ def _worker(slam_id: str, stop_event: threading.Event, interval: float) -> None:
             session = _SESSIONS.get(slam_id)
             if session is None or session.get("stop_event") is not stop_event:
                 return
+        session_lock = session["session_lock"]
+        with session_lock:
             _update_session(session)
+            session["snapshot"] = _outputs(session)
 
 
 def start_slam(
@@ -734,42 +737,47 @@ def start_slam(
         selected_mode = "editor"
     with _LOCK:
         previous = _SESSIONS.pop(clean_id, None)
-        if previous:
-            event = previous.get("stop_event")
-            if isinstance(event, threading.Event):
-                event.set()
-            if previous.get("mode") == "device":
-                warp_viewer_runtime.stop_viewer(clean_id)
-        stop_event = threading.Event()
-        session = {
-            "slam_id": clean_id,
-            "node_id": str(node_id or ""),
-            "source": dict(source),
-            "odometry_source": dict(odometry_source or {}),
-            "source_reader": source_reader if callable(source_reader) else viewer_runtime._local_stream_reader,
-            "mode": selected_mode,
-            "device": str(device or "cuda:0"),
-            "options": dict(options),
-            "running": True,
-            "live": False,
-            "mapping_paused": False,
-            "keyframes": [],
-            "edges": [],
-            "map_points": np.empty((0, 3), dtype=np.float32),
-            "pose": np.zeros(3, dtype=np.float64),
-            "previous_pose": None,
-            "last_odometry": None,
-            "source_time_ns": 0,
-            "source_received": 0,
-            "loop_closures": 0,
-            "scene": {},
-            "native": {},
-            "status": {"kind": "blacknode.slam-status", "schema_version": 1, "state": "waiting", "source_fresh": False, "error": ""},
-            "report": "SLAM started; waiting for a fresh LaserScan message",
-            "stop_event": stop_event,
-        }
+    if previous:
+        event = previous.get("stop_event")
+        if isinstance(event, threading.Event):
+            event.set()
+        if previous.get("mode") == "device":
+            warp_viewer_runtime.stop_viewer(clean_id)
+    stop_event = threading.Event()
+    session = {
+        "slam_id": clean_id,
+        "node_id": str(node_id or ""),
+        "source": dict(source),
+        "odometry_source": dict(odometry_source or {}),
+        "source_reader": source_reader if callable(source_reader) else viewer_runtime._local_stream_reader,
+        "mode": selected_mode,
+        "device": str(device or "cuda:0"),
+        "options": dict(options),
+        "running": True,
+        "live": False,
+        "mapping_paused": False,
+        "keyframes": [],
+        "edges": [],
+        "map_points": np.empty((0, 3), dtype=np.float32),
+        "pose": np.zeros(3, dtype=np.float64),
+        "previous_pose": None,
+        "last_odometry": None,
+        "source_time_ns": 0,
+        "source_received": 0,
+        "loop_closures": 0,
+        "scene": {},
+        "native": {},
+        "status": {"kind": "blacknode.slam-status", "schema_version": 1, "state": "waiting", "source_fresh": False, "error": ""},
+        "report": "SLAM started; waiting for a fresh LaserScan message",
+        "stop_event": stop_event,
+        "session_lock": threading.RLock(),
+        "snapshot": {},
+    }
+    with _LOCK:
         _SESSIONS[clean_id] = session
+    with session["session_lock"]:
         _update_session(session)
+        session["snapshot"] = _outputs(session)
         interval = max(0.02, 1.0 / max(1.0, min(120.0, float(options.get("fps") or 30.0))))
         worker = threading.Thread(target=_worker, args=(clean_id, stop_event, interval), name=f"blacknode-slam-{clean_id}", daemon=True)
         session["worker"] = worker
@@ -781,18 +789,22 @@ def slam_status(slam_id: str) -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
     with _LOCK:
         session = _SESSIONS.get(clean_id)
-        if session is None:
-            return {"running": False, "live": False, "scene": {}, "pose": {}, "map": {}, "status": {"kind": "blacknode.slam-status", "schema_version": 1, "state": "stopped"}, "viewer": {"viewer_id": clean_id, "state": "stopped"}, "report": "SLAM is stopped"}
+    if session is None:
+        return {"running": False, "live": False, "scene": {}, "pose": {}, "map": {}, "status": {"kind": "blacknode.slam-status", "schema_version": 1, "state": "stopped"}, "viewer": {"viewer_id": clean_id, "state": "stopped"}, "report": "SLAM is stopped"}
+    with session["session_lock"]:
         _update_session(session)
-        return _outputs(session)
+        outputs = _outputs(session)
+        session["snapshot"] = outputs
+        return outputs
 
 
 def clear_slam(slam_id: str) -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
     with _LOCK:
         session = _SESSIONS.get(clean_id)
-        if session is None:
-            return slam_status(clean_id)
+    if session is None:
+        return slam_status(clean_id)
+    with session["session_lock"]:
         session.update(
             mapping_paused=True,
             keyframes=[], edges=[], map_points=np.empty((0, 3), dtype=np.float32),
@@ -805,15 +817,18 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
         status = dict(session.get("status") or {})
         status.update(mapping=False, keyframes=0, loop_closures=0)
         session["status"] = status
-        return _outputs(session)
+        outputs = _outputs(session)
+        session["snapshot"] = outputs
+        return outputs
 
 
 def set_mapping(slam_id: str, enabled: bool) -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
     with _LOCK:
         session = _SESSIONS.get(clean_id)
-        if session is None:
-            return slam_status(clean_id)
+    if session is None:
+        return slam_status(clean_id)
+    with session["session_lock"]:
         session["mapping_paused"] = not enabled
         if session.get("mode") == "device":
             warp_viewer_runtime.stop_viewer(clean_id)
@@ -825,38 +840,44 @@ def set_mapping(slam_id: str, enabled: bool) -> dict[str, Any]:
         scene["animation"] = animation
         session["scene"] = scene
         session["report"] = "SLAM mapping enabled" if enabled else "SLAM mapping disabled; localization remains active"
-        return _outputs(session)
+        outputs = _outputs(session)
+        session["snapshot"] = outputs
+        return outputs
 
 
 def stop_slam(slam_id: str = "") -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
     with _LOCK:
         ids = [clean_id] if clean_id else list(_SESSIONS)
-        stopped = 0
-        for session_id in ids:
-            session = _SESSIONS.pop(session_id, None)
-            if session is None:
-                continue
-            event = session.get("stop_event")
-            if isinstance(event, threading.Event):
-                event.set()
-            if session.get("mode") == "device":
-                warp_viewer_runtime.stop_viewer(session_id)
-            stopped += 1
+        sessions = [
+            (session_id, session)
+            for session_id in ids
+            if (session := _SESSIONS.pop(session_id, None)) is not None
+        ]
+    for session_id, session in sessions:
+        event = session.get("stop_event")
+        if isinstance(event, threading.Event):
+            event.set()
+        if session.get("mode") == "device":
+            warp_viewer_runtime.stop_viewer(session_id)
+    stopped = len(sessions)
     return {"ok": True, "stopped": stopped}
 
 
 def runtime_status() -> dict[str, Any]:
     with _LOCK:
-        node_outputs = []
-        for slam_id, session in list(_SESSIONS.items()):
-            _update_session(session)
-            node_outputs.append({
-                "node_type": "SLAM",
-                "node_id": session.get("node_id", ""),
-                "run_id": slam_id,
-                "outputs": _outputs(session),
-            })
+        sessions = list(_SESSIONS.items())
+    node_outputs = []
+    for slam_id, session in sessions:
+        outputs = session.get("snapshot")
+        if not isinstance(outputs, dict) or not outputs:
+            outputs = _outputs(session)
+        node_outputs.append({
+            "node_type": "SLAM",
+            "node_id": session.get("node_id", ""),
+            "run_id": slam_id,
+            "outputs": outputs,
+        })
     return {
         "ok": all(item["outputs"].get("status", {}).get("state") != "error" for item in node_outputs),
         "active": bool(node_outputs),
