@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-cuda"
-version = "0.3.7"
+version = "0.3.8"
 description = "GPU capability checks, image processing, tensor operations, and optional benchmarks."
 requires-blacknode = ">=0.1.0"
 layer = "compute"

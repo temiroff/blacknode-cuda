@@ -421,7 +421,8 @@ def _scene_from_processed(
             "ray_trail_count": int(options.get("ray_trail_count") or 96),
             "pulse_hz": float(options.get("scan_hz") or 1.0),
             "sweep_direction": "counterclockwise",
-            "accumulate_hits": bool(options.get("accumulate_hits", True)),
+            "accumulate_hits": bool(options.get("accumulate_hits", True))
+            and not bool(options.get("history_paused", False)),
         },
         "device": str(processed.get("device") or ""),
         "kernel_ms": float(processed.get("kernel_ms") or 0.0),
@@ -438,11 +439,12 @@ def _append_scan_history(
         colors.extend([[0.0, 0.78, 1.0]] * (len(points) - len(colors)))
     options = session["options"]
     if session.get("history_paused"):
-        return (
-            list(session.get("history_points") or []),
-            list(session.get("history_colors") or []),
-            int(session.get("accumulated_scan_count") or 0),
-        )
+        # Accumulation Off still follows the live sensor. Replace the retained
+        # cloud with the latest sweep instead of freezing an old scene.
+        session["history_points"] = points
+        session["history_colors"] = colors[:len(points)]
+        session["accumulated_scan_count"] = 1 if points else 0
+        return points, colors[:len(points)], int(session["accumulated_scan_count"])
     if not options.get("accumulate_hits", True):
         session["history_points"] = points
         session["history_colors"] = colors
@@ -620,7 +622,10 @@ def _update_session(session: dict[str, Any]) -> None:
         processed,
         scan,
         source_outputs,
-        options,
+        {
+            **options,
+            "history_paused": bool(session.get("history_paused")),
+        },
         history_points,
         history_colors,
         accumulated_scan_count,
@@ -866,7 +871,7 @@ def clear_viewer(viewer_id: str) -> dict[str, Any]:
         status = dict(session.get("status") or {})
         status["history_paused"] = True
         session["status"] = status
-        session["report"] = "Viewer scan history cleared and paused"
+        session["report"] = "Viewer scan history cleared; accumulation is off"
         return _viewer_outputs(session)
 
 
@@ -887,7 +892,7 @@ def resume_viewer(viewer_id: str) -> dict[str, Any]:
         if session.get("mode") == "device":
             warp_viewer_runtime.stop_viewer(clean_id)
             session["native"] = {}
-        session["report"] = "Viewer scan history resumed"
+        session["report"] = "Viewer accumulation enabled"
         return _viewer_outputs(session)
 
 
@@ -908,7 +913,7 @@ def pause_viewer(viewer_id: str) -> dict[str, Any]:
         if session.get("mode") == "device":
             warp_viewer_runtime.stop_viewer(clean_id)
             session["native"] = {}
-        session["report"] = "Viewer scan history paused"
+        session["report"] = "Viewer accumulation disabled; showing the latest scan"
         return _viewer_outputs(session)
 
 

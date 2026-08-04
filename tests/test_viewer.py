@@ -335,11 +335,14 @@ def test_viewer_accumulates_real_scans_and_clears_history(monkeypatch):
     assert cleared["scene"]["accumulated_scan_count"] == 0
     assert cleared["scene"]["history_paused"] is True
     assert cached["scene"]["point_count"] == 0
-    assert still_paused["scene"]["point_count"] == 0
+    assert still_paused["scene"]["point_count"] == 2
+    assert still_paused["scene"]["accumulated_scan_count"] == 1
+    assert still_paused["scene"]["history_paused"] is True
+    assert still_paused["scene"]["animation"]["accumulate_hits"] is False
     assert resumed["scene"]["history_paused"] is False
-    assert rebuilding["scene"]["point_count"] == 2
-    assert rebuilding["scene"]["accumulated_scan_count"] == 1
-    assert cleared["report"] == "Viewer scan history cleared and paused"
+    assert rebuilding["scene"]["point_count"] == 4
+    assert rebuilding["scene"]["accumulated_scan_count"] == 2
+    assert cleared["report"] == "Viewer scan history cleared; accumulation is off"
     viewer_runtime.stop_viewer()
 
 
