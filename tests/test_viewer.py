@@ -320,28 +320,36 @@ def test_viewer_accumulates_real_scans_and_clears_history(monkeypatch):
     })
     state["received"] = 2
     accumulated = viewer_runtime.viewer_status("history")
+    paused = _NODE_REGISTRY["Viewer"]({"action": "pause", "viewer_id": "history"})
+    state["received"] = 3
+    frozen = viewer_runtime.viewer_status("history")
     cleared = _NODE_REGISTRY["Viewer"]({"action": "clear", "viewer_id": "history"})
     cached = viewer_runtime.viewer_status("history")
-    state["received"] = 3
+    state["received"] = 4
     still_paused = viewer_runtime.viewer_status("history")
     resumed = _NODE_REGISTRY["Viewer"]({"action": "resume", "viewer_id": "history"})
-    state["received"] = 4
+    state["received"] = 5
     rebuilding = viewer_runtime.viewer_status("history")
 
     assert accumulated["scene"]["point_count"] == 4
     assert accumulated["scene"]["accumulated_scan_count"] == 2
+    assert paused["scene"]["history_paused"] is True
+    assert frozen["scene"]["point_count"] == 4
+    assert frozen["scene"]["current_point_count"] == 2
+    assert frozen["scene"]["accumulated_scan_count"] == 2
     assert cleared["scene"]["point_count"] == 0
     assert cleared["scene"]["current_point_count"] == 2
     assert cleared["scene"]["accumulated_scan_count"] == 0
     assert cleared["scene"]["history_paused"] is True
     assert cached["scene"]["point_count"] == 0
-    assert still_paused["scene"]["point_count"] == 2
-    assert still_paused["scene"]["accumulated_scan_count"] == 1
+    assert still_paused["scene"]["point_count"] == 0
+    assert still_paused["scene"]["current_point_count"] == 2
+    assert still_paused["scene"]["accumulated_scan_count"] == 0
     assert still_paused["scene"]["history_paused"] is True
     assert still_paused["scene"]["animation"]["accumulate_hits"] is False
     assert resumed["scene"]["history_paused"] is False
-    assert rebuilding["scene"]["point_count"] == 4
-    assert rebuilding["scene"]["accumulated_scan_count"] == 2
+    assert rebuilding["scene"]["point_count"] == 2
+    assert rebuilding["scene"]["accumulated_scan_count"] == 1
     assert cleared["report"] == "Viewer scan history cleared; accumulation is off"
     viewer_runtime.stop_viewer()
 

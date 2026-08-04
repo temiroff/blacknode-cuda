@@ -439,12 +439,14 @@ def _append_scan_history(
         colors.extend([[0.0, 0.78, 1.0]] * (len(points) - len(colors)))
     options = session["options"]
     if session.get("history_paused"):
-        # Accumulation Off still follows the live sensor. Replace the retained
-        # cloud with the latest sweep instead of freezing an old scene.
-        session["history_points"] = points
-        session["history_colors"] = colors[:len(points)]
-        session["accumulated_scan_count"] = 1 if points else 0
-        return points, colors[:len(points)], int(session["accumulated_scan_count"])
+        # Keep the registered world cloud fixed while the latest sweep remains
+        # visible through scene.current_points. Replacing history with each scan
+        # makes the environment appear to rotate around a stationary robot.
+        return (
+            session.setdefault("history_points", []),
+            session.setdefault("history_colors", []),
+            int(session.get("accumulated_scan_count") or 0),
+        )
     if not options.get("accumulate_hits", True):
         session["history_points"] = points
         session["history_colors"] = colors

@@ -47,6 +47,7 @@ def test_warp_filter_converts_filters_transforms_and_colors_on_cpu():
     assert result["ok"] is True
     assert result["raw_count"] == 3
     assert result["filtered_count"] == 2
+    assert result["filtered_indices"] == [0, 1]
     assert result["filtered_points"][0] == [2.0, 0.0, 0.0]
     assert abs(result["filtered_points"][1][0] - 1.0) < 1e-6
     assert abs(result["filtered_points"][1][1] - 2.0) < 1e-6
