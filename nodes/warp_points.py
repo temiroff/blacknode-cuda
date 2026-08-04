@@ -214,6 +214,7 @@ def _error(message: str, *, device: str = "") -> dict[str, Any]:
         "ok": False,
         "raw_points": [],
         "filtered_points": [],
+        "filtered_indices": [],
         "colors": [],
         "point_cloud": {},
         "raw_count": 0,
@@ -319,6 +320,7 @@ def process_laser_scan(
         else []
     )
     filtered_points = filtered_values[filtered_mask].astype(float).tolist()
+    filtered_indices = np.flatnonzero(filtered_mask).astype(int).tolist()
     colors = color_values[filtered_mask].astype(float).tolist()
     numpy_ms: float | None = None
     max_abs_error: float | None = None
@@ -433,6 +435,7 @@ def process_laser_scan(
         "ok": True,
         "raw_points": raw_points,
         "filtered_points": filtered_points,
+        "filtered_indices": filtered_indices,
         "colors": colors,
         "point_cloud": point_cloud,
         "raw_count": raw_count,

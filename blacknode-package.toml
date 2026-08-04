@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-cuda"
-version = "0.4.3"
+version = "0.4.4"
 description = "GPU capability checks, image processing, tensor operations, and optional benchmarks."
 requires-blacknode = ">=0.1.0"
 layer = "compute"
@@ -8,6 +8,12 @@ component-mode = true
 
 [categories]
 "NVIDIA CUDA" = "#76b900"
+
+[applications.slam]
+module = "standalone_slam"
+callable = "main"
+component = "spatial-processing"
+description = "Run local ROS 2 Warp SLAM with the packaged WebGL or native CUDA/OpenGL viewer."
 
 [dependencies]
 pip = ["cupy-cuda12x[ctk]>=13", "numpy>=1.24", "pillow>=10", "opencv-python>=4.8", "warp-lang>=1.15,<2", "pyglet>=2.0"]

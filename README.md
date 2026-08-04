@@ -12,6 +12,43 @@ blacknode packages install https://github.com/temiroff/blacknode-cuda.git
 
 Use **Packages → blacknode-cuda → Install prerequisites** after installation.
 
+## Standalone Jetson SLAM
+
+The spatial-processing component includes a named `slam` application and the
+same React/WebGL viewer used by the Blacknode editor node:
+
+```bash
+blacknode run slam --device cuda:0
+```
+
+It subscribes to `/scan` and `/odom`, runs filtering, matching, occupancy ray
+tracing, and map updates through the managed Warp SLAM runtime, serves the
+packaged viewer at `http://127.0.0.1:7780`, and opens it locally. The viewer
+retains the editor controls, camera behavior, colors, robot marker, live sweep,
+floor fill, walls, and runtime metrics. `Ctrl+C` stops SLAM and the two ROS 2
+subscriptions cleanly.
+
+Useful options:
+
+```bash
+blacknode run slam --fullscreen
+blacknode run slam --no-open --host 0.0.0.0
+blacknode run slam --scan-topic /scan --odometry-topic /odom
+blacknode run slam --native --device cuda:0
+```
+
+`--native` selects the CUDA-registered OpenGL point-buffer viewer. The packaged
+WebGL viewer remains the exact editor-view presentation and keeps Warp CUDA for
+SLAM calculations. Binding beyond loopback exposes the viewer to the selected
+network interface; use the managed device network policy for remote access.
+
+Package releases build the viewer from the shared editor component with:
+
+```bash
+cd editor
+npm run build:slam-viewer
+```
+
 ## Components
 
 | Component | Default | Main nodes |
@@ -22,9 +59,9 @@ Use **Packages → blacknode-cuda → Install prerequisites** after installation
 | `spatial-processing` | On | `Viewer`, `SLAM`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
-`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and optional pose streams, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry` and `PoseStamped` messages register scan history directly. A `TFMessage` stream can chain `pose_parent_frame` to `pose_child_frame`; `auto` targets the LaserScan frame. Connect `/tf_static` through a second generic ROS2 stream with `qos=transient_local` when fixed links are separate. The view provides 3D orbit controls, a counterclockwise ray sweep, reported angular coverage, bounded history, and an accumulation toggle; Off follows only the latest scan. LaserScan geometry remains planar. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
+`CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and optional pose streams, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry` and `PoseStamped` messages register scan history directly. A `TFMessage` stream can chain `pose_parent_frame` to `pose_child_frame`; `auto` targets the LaserScan frame. Connect `/tf_static` through a second generic ROS2 stream with `qos=transient_local` when fixed links are separate. The view provides 3D orbit controls, a counterclockwise ray sweep, reported angular coverage, bounded history, and an accumulation toggle; Off freezes the registered world cloud while the latest sweep remains visible on top. LaserScan geometry remains planar. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
 
-`SLAM` consumes the same generic scan stream and optional odometry stream. It performs scan matching, builds a bounded metric point map, adds loop-closure constraints, optimizes its pose graph, and publishes the map, estimated pose, status, and interactive scene. In `mode=device`, its native Jetson viewer writes Warp output directly into CUDA-registered OpenGL point buffers and falls back to the standard renderer when graphics interop is unavailable. Open the **ROS2 SLAM** template, select the paired device, set the topic names, and press **Go live**.
+`SLAM` consumes the same generic scan stream and optional odometry stream. It retains every valid range sample by default after range filtering, deskews beams against synchronized odometry across each scan, performs coarse-to-fine scan matching, confidence-gates tracking corrections and map insertion, and averages repeated observations in metric map cells. Every valid real LiDAR return also launches one Warp ray-tracing thread: traversed cells fill a persistent free-floor occupancy layer whose world origin and cell centers stay fixed for the session, while repeated endpoints become confidence-gated occupied wall cells. Warp classifies and packs the complete grid at two bits per cell; the editor uploads that fixed-size payload directly as a nearest-neighbor WebGL texture, preserving every cell while avoiding growing point/color JSON. On CUDA, the fixed reference grid remains GPU-resident and Warp scores the complete coarse-to-fine pose-candidate set in parallel; CPU mode retains the NumPy matcher and caches its expanded lookup until the reference changes. The editor renders the fixed unknown extent, filled free floor, occupied walls, live scan, and robot as distinct layers. The viewer reports the Warp device, ray count, free and occupied cell counts, grid size, synchronized kernel/copy and matching time, and encoding time so the accelerated work is directly inspectable. `occupancy_radius_m` bounds the fixed grid, while `map_resolution_m` controls its cell size. Fresh stationary odometry prevents a moving person or object from dragging the fixed map, while improved whole-scan evidence overrides lagging odometry as soon as the scan matcher resolves motion. Large delayed corrections are bounded per scan so the robot pose catches up progressively instead of jumping. With accumulation off, the visible map remains frozen and a hidden registered scan keeps localization active; after Clear, the first new scan establishes that tracking reference while accumulated points stay empty. It adds loop-closure constraints, optimizes its pose graph, and publishes the map, estimated pose, status, and interactive scene. The scene keeps discovered points in the fixed `map` frame while the robot pose and current scan move through it. Tune `tracking_min_score` to reject uncertain pose corrections and `mapping_min_score` to prevent uncertain keyframes from entering the dark accumulated map. In `mode=device`, its native Jetson viewer writes Warp output directly into CUDA-registered OpenGL point buffers and falls back to the standard renderer when graphics interop is unavailable. Open the **ROS2 SLAM** template, select the paired device, set the topic names, and press **Go live**.
 
 ## Included workflows
 

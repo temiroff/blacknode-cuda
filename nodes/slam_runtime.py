@@ -11,7 +11,8 @@ try:
 except Exception:  # pragma: no cover - dependency diagnostics cover this path
     np = None
 
-from . import viewer_runtime, warp_viewer_runtime
+from . import viewer_runtime, warp_matcher, warp_viewer_runtime
+from .warp_occupancy import WarpOccupancyGrid
 
 
 _SESSIONS: dict[str, dict[str, Any]] = {}
@@ -20,6 +21,10 @@ _MAX_EDITOR_POINTS = 20_000
 _MIN_MATCH_SCORE_GAIN = 0.02
 _STATIONARY_TRANSLATION_M = 0.01
 _STATIONARY_ROTATION_RAD = math.radians(0.5)
+_ODOMETRY_OVERRIDE_MIN_SCORE = 0.35
+_ODOMETRY_OVERRIDE_SCORE_GAIN = _MIN_MATCH_SCORE_GAIN
+_MAX_TRACKING_TRANSLATION_STEP_M = 0.08
+_MAX_TRACKING_ROTATION_STEP_RAD = math.radians(3.0)
 
 
 def _safe_id(value: str) -> str:
@@ -69,6 +74,55 @@ def _transform_points(points: Any, pose: Any) -> Any:
     return result
 
 
+def _limit_pose_correction(initial_pose: Any, matched_pose: Any) -> tuple[Any, bool]:
+    """Bound one scan-matching correction so delayed evidence cannot jump."""
+    delta = _relative(initial_pose, matched_pose)
+    distance = math.hypot(float(delta[0]), float(delta[1]))
+    translation_scale = (
+        min(1.0, _MAX_TRACKING_TRANSLATION_STEP_M / distance)
+        if distance > 0.0
+        else 1.0
+    )
+    yaw = max(
+        -_MAX_TRACKING_ROTATION_STEP_RAD,
+        min(_MAX_TRACKING_ROTATION_STEP_RAD, float(delta[2])),
+    )
+    limited = bool(
+        translation_scale < 1.0
+        or abs(float(delta[2])) > _MAX_TRACKING_ROTATION_STEP_RAD
+    )
+    correction = np.asarray([
+        float(delta[0]) * translation_scale,
+        float(delta[1]) * translation_scale,
+        yaw,
+    ], dtype=np.float64)
+    return _compose(initial_pose, correction), limited
+
+
+def _deskew_points(
+    points: Any,
+    beam_indices: Any,
+    beam_count: int,
+    start_pose: Any,
+    end_pose: Any,
+) -> Any:
+    """Register moving-sensor beam returns into the first-beam sensor frame."""
+    result = np.asarray(points, dtype=np.float32).copy()
+    indices = np.asarray(beam_indices, dtype=np.float64)
+    if len(result) == 0 or len(indices) != len(result) or beam_count <= 1:
+        return result
+    motion = _relative(start_pose, end_pose)
+    fractions = np.clip(indices / float(beam_count - 1), 0.0, 1.0)
+    yaw = float(motion[2]) * fractions
+    cosine = np.cos(yaw)
+    sine = np.sin(yaw)
+    x = result[:, 0].astype(np.float64)
+    y = result[:, 1].astype(np.float64)
+    result[:, 0] = cosine * x - sine * y + float(motion[0]) * fractions
+    result[:, 1] = sine * x + cosine * y + float(motion[1]) * fractions
+    return result
+
+
 def _expanded_cells(points: Any, resolution: float) -> set[tuple[int, int]]:
     if points is None or len(points) == 0:
         return set()
@@ -90,6 +144,73 @@ def _match_score(local_points: Any, occupied: set[tuple[int, int]], pose: Any, r
     return hits / max(1, len(cells))
 
 
+def _pose_match_score(
+    local_points: Any,
+    reference_points: Any,
+    pose: Any,
+    resolution: float,
+    *,
+    occupied_cells: set[tuple[int, int]] | None = None,
+) -> float:
+    """Score one pose with the same bounded point density used by matching."""
+    local = np.asarray(local_points, dtype=np.float32)
+    reference = np.asarray(reference_points, dtype=np.float32)
+    if len(local) == 0 or len(reference) == 0:
+        return 0.0
+    local = local[::max(1, math.ceil(len(local) / 1440))]
+    occupied = occupied_cells if occupied_cells is not None else _expanded_cells(reference, resolution)
+    return _match_score(local, occupied, pose, resolution)
+
+
+def _cached_expanded_cells(session: dict[str, Any], reference_points: Any, resolution: float) -> set[tuple[int, int]]:
+    """Reuse the fixed map lookup until a new map/reference array replaces it."""
+    if (
+        session.get("match_reference_points") is reference_points
+        and float(session.get("match_reference_resolution") or 0.0) == float(resolution)
+    ):
+        cached = session.get("match_reference_cells")
+        if isinstance(cached, set):
+            return cached
+    cells = _expanded_cells(reference_points, resolution)
+    session["match_reference_points"] = reference_points
+    session["match_reference_resolution"] = float(resolution)
+    session["match_reference_cells"] = cells
+    return cells
+
+
+def _cached_warp_matcher(
+    session: dict[str, Any],
+    reference_points: Any,
+    resolution: float,
+    linear_window: float,
+) -> Any | None:
+    device = str(session.get("device") or "")
+    if not warp_matcher.available(device):
+        return None
+    if (
+        session.get("warp_match_reference_points") is reference_points
+        and float(session.get("warp_match_resolution") or 0.0) == float(resolution)
+        and float(session.get("warp_match_linear_window") or 0.0) == float(linear_window)
+    ):
+        return session.get("warp_matcher")
+    try:
+        matcher = warp_matcher.WarpCorrelativeMatcher(
+            reference_points,
+            resolution=resolution,
+            linear_window=linear_window,
+            device=device,
+        )
+    except Exception as exc:
+        session["warp_match_error"] = f"{type(exc).__name__}: {exc}"
+        return None
+    session["warp_match_reference_points"] = reference_points
+    session["warp_match_resolution"] = float(resolution)
+    session["warp_match_linear_window"] = float(linear_window)
+    session["warp_matcher"] = matcher
+    session["warp_match_error"] = ""
+    return matcher
+
+
 def correlative_match(
     local_points: Any,
     reference_points: Any,
@@ -98,6 +219,8 @@ def correlative_match(
     resolution: float,
     linear_window: float,
     angular_window: float,
+    occupied_cells: set[tuple[int, int]] | None = None,
+    gpu_matcher: Any | None = None,
 ) -> tuple[Any, float]:
     """Find the highest occupancy-overlap pose near an odometry/motion prior."""
     if np is None:
@@ -107,10 +230,18 @@ def correlative_match(
     initial = np.asarray(initial_pose, dtype=np.float64)
     if len(local) == 0 or len(reference) == 0:
         return initial.copy(), 0.0
+    if gpu_matcher is not None:
+        return gpu_matcher.match(
+            local,
+            initial,
+            linear_window=linear_window,
+            angular_window=angular_window,
+            minimum_score_gain=_MIN_MATCH_SCORE_GAIN,
+        )
     # Keep runtime bounded for dense 360-degree sensors while retaining the
     # whole angular field of view.
-    local = local[::max(1, math.ceil(len(local) / 720))]
-    occupied = _expanded_cells(reference, resolution)
+    local = local[::max(1, math.ceil(len(local) / 1440))]
+    occupied = occupied_cells if occupied_cells is not None else _expanded_cells(reference, resolution)
     best = initial.copy()
     best_score = _match_score(local, occupied, best, resolution)
 
@@ -141,6 +272,12 @@ def correlative_match(
     coarse_radius = max(1, min(4, math.ceil(linear_window / coarse_linear)))
     best, best_score = search(best, coarse_linear, coarse_angular, coarse_radius)
     best, best_score = search(best, max(resolution * 0.5, coarse_linear / 2.0), coarse_angular / 2.0, 2)
+    best, best_score = search(
+        best,
+        max(resolution * 0.25, coarse_linear / 4.0),
+        max(math.radians(0.1), coarse_angular / 5.0),
+        2,
+    )
     return best, float(best_score)
 
 
@@ -215,7 +352,13 @@ def _scan_values(outputs: dict[str, Any], source: dict[str, Any]) -> list[dict[s
     return [scans[key] for key in sorted(scans)][-12:]
 
 
-def _read_odometry(session: dict[str, Any], scan: dict[str, Any]) -> Any | None:
+def _read_odometry_at(
+    session: dict[str, Any],
+    scan: dict[str, Any],
+    target_time_ns: int,
+    *,
+    record_sample: bool = False,
+) -> Any | None:
     source = session.get("odometry_source")
     if not isinstance(source, dict) or not source:
         return None
@@ -233,7 +376,7 @@ def _read_odometry(session: dict[str, Any], scan: dict[str, Any]) -> Any | None:
     pose, _error = viewer_runtime._normalize_pose(
         outputs,
         source,
-        int(scan.get("header_time_ns") or 0),
+        int(target_time_ns),
         float(options["pose_sync_tolerance_s"]),
         str(options["pose_parent_frame"]),
         str(options["pose_child_frame"]),
@@ -241,8 +384,29 @@ def _read_odometry(session: dict[str, Any], scan: dict[str, Any]) -> Any | None:
     )
     if not pose:
         return None
+    if record_sample:
+        session["odometry_sample_time_ns"] = int(pose.get("source_time_ns") or 0)
     x, y, yaw = viewer_runtime._combined_sensor_pose(options, pose)
     return np.asarray([x, y, yaw], dtype=np.float64)
+
+
+def _read_odometry(session: dict[str, Any], scan: dict[str, Any]) -> Any | None:
+    return _read_odometry_at(
+        session,
+        scan,
+        int(scan.get("header_time_ns") or 0),
+        record_sample=True,
+    )
+
+
+def _scan_end_time_ns(scan: dict[str, Any]) -> int:
+    start = int(scan.get("header_time_ns") or 0)
+    ranges = scan.get("ranges") if isinstance(scan.get("ranges"), list) else []
+    time_increment = max(0.0, float(scan.get("time_increment") or 0.0))
+    duration = time_increment * max(0, len(ranges) - 1)
+    if duration <= 0.0:
+        duration = max(0.0, float(scan.get("scan_time") or 0.0))
+    return start + int(duration * 1_000_000_000.0) if start and duration > 0.0 else 0
 
 
 def _map_points(session: dict[str, Any]) -> Any:
@@ -255,11 +419,16 @@ def _map_points(session: dict[str, Any]) -> Any:
     ]
     points = np.concatenate(transformed, axis=0) if transformed else np.empty((0, 3), dtype=np.float32)
     resolution = float(session["options"]["map_resolution_m"])
-    unique: dict[tuple[int, int], Any] = {}
+    cells: dict[tuple[int, int], list[Any]] = {}
     for point in points:
         cell = (round(float(point[0]) / resolution), round(float(point[1]) / resolution))
-        unique[cell] = point
-    values = np.asarray(list(unique.values()), dtype=np.float32)
+        aggregate = cells.setdefault(cell, [np.zeros(3, dtype=np.float64), 0])
+        aggregate[0] += point
+        aggregate[1] += 1
+    values = np.asarray(
+        [total / count for total, count in cells.values()],
+        dtype=np.float32,
+    )
     maximum = int(session["options"]["max_map_points"])
     if len(values) > maximum:
         values = values[-maximum:]
@@ -357,13 +526,40 @@ def _add_keyframe(session: dict[str, Any], local_points: Any, pose: Any, scan_ti
 def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, kernel_ms: float) -> dict[str, Any]:
     map_points = np.asarray(session.get("map_points"), dtype=np.float32)
     display_stride = max(1, math.ceil(len(map_points) / _MAX_EDITOR_POINTS))
-    display = map_points[::display_stride]
+    occupancy_grid = session.get("occupancy_grid")
+    # The occupancy texture contains every fixed map cell compactly. Sending
+    # the redundant point cloud and constant color arrays made every editor
+    # poll grow into multi-megabyte JSON, even though the Warp kernel was fast.
+    display = (
+        np.empty((0, 3), dtype=np.float32)
+        if occupancy_grid is not None
+        else map_points[::display_stride]
+    )
     pose_value = session.get("pose")
     current_pose = np.asarray(
         pose_value if pose_value is not None else [0.0, 0.0, 0.0],
         dtype=np.float64,
     )
     current_world = _transform_points(current_points, current_pose)
+    occupancy = occupancy_grid.snapshot() if occupancy_grid is not None else {
+        "backend": "warp",
+        "device": str(session.get("device") or ""),
+        "kernel_ms": 0.0,
+        "rays": 0,
+        "grid_cells": 0,
+        "grid_width": 0,
+        "grid_height": 0,
+        "free_cells": 0,
+        "display_cells": 0,
+        "occupied_cells": 0,
+        "occupied_display_cells": 0,
+        "display_limited": False,
+        "resolution_m": float(session["options"]["map_resolution_m"]),
+        "fixed_origin": True,
+        "encoding": "u2-base64",
+        "data": "",
+        "revision": 0,
+    }
     keyframes = session.get("keyframes") or []
     loop_edges = [edge for edge in session.get("edges") or [] if edge.get("type") == "loop"]
     return {
@@ -374,14 +570,23 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "frame": "map",
         "sequence": int(scan.get("source_time_ns") or 0),
         "points": display.astype(float).tolist(),
-        "colors": [[0.04, 0.36, 0.48]] * len(display),
+        "colors": [],
         "current_points": current_world.astype(float).tolist(),
-        "current_colors": [[0.0, 0.78, 1.0]] * len(current_world),
+        "current_colors": [],
+        "floor_points": [],
+        "floor_colors": [],
+        "occupied_points": [],
+        "occupied_colors": [],
         "point_count": len(map_points),
         "current_point_count": len(current_world),
         "accumulated_scan_count": len(keyframes),
         "display_count": len(display),
         "display_stride": display_stride,
+        "floor_point_count": int(occupancy.get("free_cells") or 0),
+        "floor_display_count": int(occupancy.get("free_cells") or 0),
+        "occupied_point_count": int(occupancy.get("occupied_cells") or 0),
+        "occupied_display_count": int(occupancy.get("occupied_cells") or 0),
+        "map_render_mode": "occupancy-texture" if occupancy_grid is not None else "point-cloud",
         "history_registered": True,
         "history_paused": bool(session.get("mapping_paused")),
         "pose_source": "scan-matching",
@@ -424,6 +629,15 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         },
         "slam": {
             "match_score": float(session.get("match_score") or 0.0),
+            "prior_match_score": float(session.get("prior_match_score") or 0.0),
+            "tracking_accepted": bool(session.get("tracking_accepted", True)),
+            "stationary_odometry_locked": bool(session.get("stationary_odometry_locked")),
+            "scan_motion_override": bool(session.get("scan_motion_override")),
+            "tracking_correction_limited": bool(session.get("tracking_correction_limited")),
+            "matching_backend": str(session.get("matching_backend") or "numpy"),
+            "matching_kernel_ms": float(session.get("matching_kernel_ms") or 0.0),
+            "map_update_rejected": bool(session.get("map_update_rejected")),
+            "deskewed": bool(session.get("deskewed")),
             "keyframes": len(keyframes),
             "constraints": len(session.get("edges") or []),
             "loop_closures": int(session.get("loop_closures") or 0),
@@ -440,7 +654,34 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         },
         "device": str(session.get("device") or ""),
         "kernel_ms": float(kernel_ms),
+        "occupancy": occupancy,
     }
+
+
+def _update_occupancy(
+    session: dict[str, Any],
+    local_points: Any,
+    pose: Any,
+    angular_increment_rad: float = 0.0,
+) -> None:
+    """Trace all real returns into a fixed map grid using Warp kernels."""
+    options = session["options"]
+    current_world = _transform_points(local_points, pose)
+    occupancy_grid = session.get("occupancy_grid")
+    if occupancy_grid is None:
+        occupancy_grid = WarpOccupancyGrid(
+            device=str(session.get("device") or "cuda:0"),
+            resolution_m=float(options["map_resolution_m"]),
+            radius_m=float(options.get("occupancy_radius_m") or 20.0),
+            center_xy=(float(pose[0]), float(pose[1])),
+            display_capacity=_MAX_EDITOR_POINTS * 2,
+        )
+        session["occupancy_grid"] = occupancy_grid
+    occupancy_grid.update(
+        current_world,
+        (float(pose[0]), float(pose[1])),
+        angular_increment_rad=angular_increment_rad,
+    )
 
 
 def _outputs(session: dict[str, Any]) -> dict[str, Any]:
@@ -451,6 +692,9 @@ def _outputs(session: dict[str, Any]) -> dict[str, Any]:
     ) if np is not None else [0.0, 0.0, 0.0]
     map_points = session.get("map_points")
     point_count = len(map_points) if map_points is not None else 0
+    occupancy_grid = session.get("occupancy_grid")
+    occupancy = occupancy_grid.snapshot() if occupancy_grid is not None else {}
+    occupancy_summary = {key: value for key, value in occupancy.items() if key != "data"}
     return {
         "running": bool(session.get("running")),
         "live": bool(session.get("live")),
@@ -474,6 +718,7 @@ def _outputs(session: dict[str, Any]) -> dict[str, Any]:
             "point_count": point_count,
             "keyframes": len(session.get("keyframes") or []),
             "loop_closures": int(session.get("loop_closures") or 0),
+            "occupancy": occupancy_summary,
         },
         "status": dict(session.get("status") or {}),
         "viewer": {
@@ -545,12 +790,44 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         raise RuntimeError("LaserScan has no valid returns inside the configured range")
 
     scan_time_ns = int(scan.get("source_time_ns") or time.time_ns())
+    previous_odometry_sample_time_ns = int(session.get("last_odometry_sample_time_ns") or 0)
+    odometry = _read_odometry(session, scan)
+    odometry_sample_time_ns = int(session.get("odometry_sample_time_ns") or 0)
+    scan_end_time_ns = _scan_end_time_ns(scan)
+    end_odometry = (
+        _read_odometry_at(session, scan, scan_end_time_ns)
+        if odometry is not None and scan_end_time_ns > 0
+        else None
+    )
+    filtered_indices = processed.get("filtered_indices") or []
+    deskewed = bool(
+        odometry is not None
+        and end_odometry is not None
+        and len(filtered_indices) == len(local_points)
+        and len(scan.get("ranges") or []) > 1
+    )
+    if deskewed:
+        local_points = _deskew_points(
+            local_points,
+            filtered_indices,
+            len(scan.get("ranges") or []),
+            odometry,
+            end_odometry,
+        )
+    session["deskewed"] = deskewed
     if len(local_points) < 8:
         pose_value = session.get("pose")
         pose = np.asarray(
             pose_value if pose_value is not None else [0.0, 0.0, 0.0],
             dtype=np.float64,
         )
+        if not session.get("mapping_paused"):
+            _update_occupancy(
+                session,
+                local_points,
+                pose,
+                float(scan.get("angle_increment") or 0.0),
+            )
         scene = _scene(
             session,
             scan,
@@ -581,56 +858,148 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         _update_native_viewer(session, scan, pose)
         return
 
-    odometry = _read_odometry(session, scan)
     pose_value = session.get("pose")
     previous_pose = np.asarray(
         pose_value if pose_value is not None else [0.0, 0.0, 0.0],
         dtype=np.float64,
     )
-    odometry_stationary = False
+    stationary_odometry_locked = False
+    scan_motion_override = False
+    tracking_correction_limited = False
+    prior_match_score = 0.0
     if session.get("source_time_ns"):
         if odometry is not None and session.get("last_odometry") is not None:
             odometry_delta = _relative(session["last_odometry"], odometry)
-            odometry_stationary = (
-                math.hypot(float(odometry_delta[0]), float(odometry_delta[1]))
+            initial = _compose(previous_pose, odometry_delta)
+            stationary_odometry_locked = (
+                odometry_sample_time_ns > previous_odometry_sample_time_ns > 0
+                and math.hypot(float(odometry_delta[0]), float(odometry_delta[1]))
                 < _STATIONARY_TRANSLATION_M
                 and abs(float(odometry_delta[2])) < _STATIONARY_ROTATION_RAD
             )
-            initial = previous_pose.copy() if odometry_stationary else _compose(previous_pose, odometry_delta)
         elif session.get("previous_pose") is not None:
             initial = _compose(previous_pose, _relative(session["previous_pose"], previous_pose))
         else:
             initial = previous_pose.copy()
-        reference = session.get("map_points")
+        map_reference = session.get("map_points")
+        tracking_reference = session.get("tracking_reference_points")
+        reference = (
+            map_reference
+            if map_reference is not None and len(map_reference) >= 8
+            else tracking_reference
+        )
         if reference is not None and len(reference) >= 8:
-            pose, score = correlative_match(
+            resolution = float(options["map_resolution_m"])
+            linear_window = float(options["match_linear_window_m"])
+            gpu_matcher = _cached_warp_matcher(session, reference, resolution, linear_window)
+            reference_cells = None if gpu_matcher is not None else _cached_expanded_cells(
+                session, reference, resolution,
+            )
+            prior_match_score = (
+                gpu_matcher.score_pose(local_points, initial)
+                if gpu_matcher is not None
+                else _pose_match_score(
+                    local_points,
+                    reference,
+                    initial,
+                    resolution,
+                    occupied_cells=reference_cells,
+                )
+            )
+            matched_pose, score = correlative_match(
                 local_points,
                 reference,
                 initial,
-                resolution=float(options["map_resolution_m"]),
-                linear_window=float(options["match_linear_window_m"]),
+                resolution=resolution,
+                linear_window=linear_window,
                 angular_window=float(options["match_angular_window_rad"]),
+                occupied_cells=reference_cells,
+                gpu_matcher=gpu_matcher,
             )
-            if odometry_stationary:
-                pose = previous_pose.copy()
+            session["matching_backend"] = "warp" if gpu_matcher is not None else "numpy"
+            session["matching_kernel_ms"] = float(gpu_matcher.last_kernel_ms) if gpu_matcher is not None else 0.0
+            matched_delta = _relative(initial, matched_pose)
+            scan_motion_override = bool(
+                stationary_odometry_locked
+                and float(score) >= max(
+                    float(options["tracking_min_score"]),
+                    _ODOMETRY_OVERRIDE_MIN_SCORE,
+                )
+                and float(score) - float(prior_match_score) >= _ODOMETRY_OVERRIDE_SCORE_GAIN
+                and (
+                    math.hypot(float(matched_delta[0]), float(matched_delta[1]))
+                    >= _STATIONARY_TRANSLATION_M
+                    or abs(float(matched_delta[2])) >= _STATIONARY_ROTATION_RAD
+                )
+            )
+            stationary_odometry_locked = bool(
+                stationary_odometry_locked and not scan_motion_override
+            )
+            if stationary_odometry_locked:
+                pose = initial
+                tracking_accepted = True
+            else:
+                tracking_accepted = float(score) >= float(options["tracking_min_score"])
+                if tracking_accepted:
+                    pose, tracking_correction_limited = _limit_pose_correction(
+                        initial,
+                        matched_pose,
+                    )
+                else:
+                    pose = initial
         else:
             pose, score = initial, 0.0
+            tracking_accepted = True
     else:
         pose, score = np.zeros(3, dtype=np.float64), 1.0
+        tracking_accepted = True
         if odometry is not None:
             session["odometry_origin"] = odometry.copy()
 
     session["previous_pose"] = previous_pose
     session["pose"] = pose
     session["match_score"] = float(score)
+    session["prior_match_score"] = float(prior_match_score)
+    session["tracking_accepted"] = tracking_accepted
+    session["stationary_odometry_locked"] = stationary_odometry_locked
+    session["scan_motion_override"] = scan_motion_override
+    session["tracking_correction_limited"] = tracking_correction_limited
     if odometry is not None:
         session["last_odometry"] = odometry
-    if not session.get("mapping_paused") and _should_add_keyframe(session, pose, scan_time_ns):
+        if odometry_sample_time_ns > 0:
+            session["last_odometry_sample_time_ns"] = odometry_sample_time_ns
+    should_add_keyframe = (
+        not session.get("mapping_paused")
+        and _should_add_keyframe(session, pose, scan_time_ns)
+    )
+    mapping_score_accepted = (
+        not session.get("keyframes")
+        or float(score) >= float(options["mapping_min_score"])
+    )
+    map_update_rejected = bool(should_add_keyframe and not mapping_score_accepted)
+    session["map_update_rejected"] = map_update_rejected
+    if should_add_keyframe and mapping_score_accepted:
         _add_keyframe(session, local_points, pose, scan_time_ns, score)
         if session.get("keyframes"):
             pose = np.asarray(session["keyframes"][-1]["pose"], dtype=np.float64)
             session["pose"] = pose
-    current_world = _transform_points(local_points, pose)
+    if not session.get("mapping_paused") and tracking_accepted:
+        _update_occupancy(
+            session,
+            local_points,
+            pose,
+            float(scan.get("angle_increment") or 0.0),
+        )
+    if (
+        session.get("mapping_paused")
+        and (session.get("map_points") is None or len(session.get("map_points")) < 8)
+        and tracking_accepted
+        and not stationary_odometry_locked
+    ):
+        # Accumulation controls what is retained for display/mapping, not
+        # localization. Keep one hidden registered scan so the robot can move
+        # through a fixed frame after Clear while the visible map stays empty.
+        session["tracking_reference_points"] = _transform_points(local_points, pose)
     scene = _scene(session, scan, local_points, float(processed.get("kernel_ms") or 0.0))
     session.update(
         live=True,
@@ -644,6 +1013,13 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
             "localized": bool(session.get("keyframes")),
             "mapping": not bool(session.get("mapping_paused")),
             "match_score": float(score),
+            "prior_match_score": float(prior_match_score),
+            "tracking_accepted": tracking_accepted,
+            "stationary_odometry_locked": stationary_odometry_locked,
+            "scan_motion_override": scan_motion_override,
+            "tracking_correction_limited": tracking_correction_limited,
+            "map_update_rejected": map_update_rejected,
+            "deskewed": deskewed,
             "keyframes": len(session.get("keyframes") or []),
             "loop_closures": int(session.get("loop_closures") or 0),
             "error": "",
@@ -651,7 +1027,9 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         report=(
             f"SLAM localized at ({float(pose[0]):.2f}, {float(pose[1]):.2f}) m, "
             f"{math.degrees(float(pose[2])):.1f}°; map {len(session.get('map_points')) if session.get('map_points') is not None else 0:,} points; "
-            f"score {float(score):.2f}; {int(session.get('loop_closures') or 0)} loop closure(s)"
+            f"score {float(score):.2f} ({'smoothed scan correction' if tracking_correction_limited else 'scan motion overrode stationary odometry' if scan_motion_override else 'stationary odometry lock' if stationary_odometry_locked else 'accepted' if tracking_accepted else 'odometry prior kept'}); "
+            f"{'deskewed' if deskewed else 'single-pose scan'}; "
+            f"{int(session.get('loop_closures') or 0)} loop closure(s)"
         ),
     )
 
@@ -786,9 +1164,26 @@ def start_slam(
         "keyframes": [],
         "edges": [],
         "map_points": np.empty((0, 3), dtype=np.float32),
+        "occupancy_grid": None,
+        "tracking_reference_points": np.empty((0, 3), dtype=np.float32),
+        "match_reference_points": None,
+        "match_reference_resolution": 0.0,
+        "match_reference_cells": set(),
+        "warp_match_reference_points": None,
+        "warp_match_resolution": 0.0,
+        "warp_match_linear_window": 0.0,
+        "warp_matcher": None,
+        "warp_match_error": "",
+        "matching_backend": "warp" if warp_matcher.available(str(device or "cuda:0")) else "numpy",
+        "matching_kernel_ms": 0.0,
         "pose": np.zeros(3, dtype=np.float64),
         "previous_pose": None,
         "last_odometry": None,
+        "odometry_sample_time_ns": 0,
+        "last_odometry_sample_time_ns": 0,
+        "prior_match_score": 0.0,
+        "scan_motion_override": False,
+        "tracking_correction_limited": False,
         "source_time_ns": 0,
         "source_received": 0,
         "loop_closures": 0,
@@ -832,11 +1227,64 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
     if session is None:
         return slam_status(clean_id)
     with session["session_lock"]:
+        scene = dict(session.get("scene") or {})
+        current_world = np.asarray(
+            scene.get("current_points") or [],
+            dtype=np.float32,
+        )
+        if current_world.ndim != 2 or (len(current_world) and current_world.shape[1] < 3):
+            current_world = np.empty((0, 3), dtype=np.float32)
+        tracking_reference = (
+            current_world
+            if len(current_world) >= 8
+            else np.asarray(
+                session.get("tracking_reference_points"),
+                dtype=np.float32,
+            )
+        )
+        scene.update(
+            points=[],
+            colors=[],
+            floor_points=[],
+            floor_colors=[],
+            occupied_points=[],
+            occupied_colors=[],
+            point_count=0,
+            floor_point_count=0,
+            floor_display_count=0,
+            occupied_point_count=0,
+            occupied_display_count=0,
+            accumulated_scan_count=0,
+            display_count=0,
+            display_stride=1,
+            trajectory=[],
+            loop_closures=[],
+            history_paused=True,
+        )
+        scene_slam = dict(scene.get("slam") or {})
+        scene_slam.update(
+            keyframes=0,
+            constraints=0,
+            loop_closures=0,
+            last_loop_score=0.0,
+            map_limited=False,
+        )
+        scene["slam"] = scene_slam
+        animation = dict(scene.get("animation") or {})
+        animation["accumulate_hits"] = False
+        scene["animation"] = animation
+        occupancy_grid = session.get("occupancy_grid")
+        if occupancy_grid is not None:
+            occupancy_grid.clear()
+            scene["occupancy"] = occupancy_grid.snapshot()
         session.update(
             mapping_paused=True,
             keyframes=[], edges=[], map_points=np.empty((0, 3), dtype=np.float32),
-            pose=np.zeros(3, dtype=np.float64), previous_pose=None, last_odometry=None,
-            source_time_ns=0, loop_closures=0, last_loop_score=0.0, scene={}, native={},
+            tracking_reference_points=tracking_reference,
+            prior_match_score=0.0, scan_motion_override=False,
+            tracking_correction_limited=False,
+            loop_closures=0, last_loop_score=0.0, map_limited=False,
+            scene=scene, native={},
             report="SLAM map cleared; mapping is off",
         )
         if session.get("mode") == "device":
