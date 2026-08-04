@@ -628,6 +628,7 @@ def _run_gpu_interop_viewer_loop(
     filter_max_m: float,
     stride: int,
     sensor_pose: tuple[float, float, float],
+    robot_size: tuple[float, float, float],
     point_radius: float,
     fps: int,
     accumulate_hits: bool,
@@ -744,12 +745,12 @@ def _run_gpu_interop_viewer_loop(
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         if persist_scans and accumulate_hits:
-            gl.glUniform3f(uniform_color, 0.04, 0.42, 0.58)
+            gl.glUniform3f(uniform_color, 0.04, 0.36, 0.48)
             gl.glUniform1f(uniform_alpha, 0.72)
             gl.glPointSize(max(2.0, point_radius * 90.0))
             gl.glBindVertexArray(history_vao)
             gl.glDrawArrays(gl.GL_POINTS, 0, history_capacity)
-        gl.glUniform3f(uniform_color, 1.0, 0.80, 0.12)
+        gl.glUniform3f(uniform_color, 0.0, 0.78, 1.0)
         gl.glUniform1f(uniform_alpha, 1.0)
         gl.glPointSize(max(3.0, point_radius * 130.0))
         gl.glBindVertexArray(current_vao)
@@ -827,7 +828,7 @@ def _run_gpu_interop_viewer_loop(
             "robot_origin",
             pos=(active_robot_pose[0], active_robot_pose[1], 0.0),
             rot=_yaw_quaternion(active_robot_pose[2]),
-            extents=(0.18, 0.12, 0.05),
+            extents=(robot_size[0] * 0.5, robot_size[1] * 0.5, robot_size[2] * 0.5),
             color=(1.0, 0.35, 0.15),
         )
         renderer.render_sphere(
@@ -859,6 +860,7 @@ def run_viewer_loop(
     filter_max_m: float,
     stride: int,
     sensor_pose: tuple[float, float, float],
+    robot_size: tuple[float, float, float] = (0.25, 0.22, 0.08),
     show_raw: bool,
     show_filtered: bool,
     point_radius: float,
@@ -915,6 +917,7 @@ def run_viewer_loop(
             filter_max_m=filter_max_m,
             stride=stride,
             sensor_pose=sensor_pose,
+            robot_size=robot_size,
             point_radius=point_radius,
             fps=fps,
             accumulate_hits=accumulate_hits,
@@ -1128,7 +1131,7 @@ def run_viewer_loop(
             "robot_origin",
             pos=(active_robot_pose[0], active_robot_pose[1], 0.0),
             rot=_yaw_quaternion(active_robot_pose[2]),
-            extents=(0.18, 0.12, 0.05),
+            extents=(robot_size[0] * 0.5, robot_size[1] * 0.5, robot_size[2] * 0.5),
             color=(1.0, 0.35, 0.15),
         )
         renderer.render_sphere(

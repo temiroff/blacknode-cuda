@@ -122,12 +122,21 @@ def test_slam_node_maps_live_scans_and_pause_keeps_localization_active(monkeypat
     cleared = _NODE_REGISTRY["SLAM"]({"action": "clear", "slam_id": "live-map"})
 
     assert started["running"] is True
-    assert mapped["scene"]["slam"]["keyframes"] == 2
+    assert mapped["scene"]["slam"]["keyframes"] == 1
     assert mapped["map"]["point_count"] > 0
+    assert mapped["scene"]["robot"] == {
+        "length_m": 0.25,
+        "width_m": 0.22,
+        "height_m": 0.08,
+    }
+    assert mapped["scene"]["animation"]["enabled"] is True
+    assert mapped["scene"]["animation"]["show_rays"] is True
+    assert mapped["scene"]["colors"][0] == [0.04, 0.36, 0.48]
+    assert mapped["scene"]["current_colors"][0] == [0.0, 0.78, 1.0]
     assert mapped["pose"]["kind"] == "blacknode.slam-pose"
     assert paused["scene"]["history_paused"] is True
     assert localized["live"] is True
-    assert localized["scene"]["slam"]["keyframes"] == 2
+    assert localized["scene"]["slam"]["keyframes"] == 1
     assert localized["status"]["mapping"] is False
     assert runtime["node_outputs"][0]["node_id"] == "slam-node"
     assert cleared["map"]["point_count"] == 0
@@ -141,6 +150,8 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_package == "blacknode-cuda"
     assert fn._bn_input_types["source"] == "Dict"
     assert fn._bn_input_types["odometry"] == "Dict"
+    assert fn._bn_input_types["robot_length_m"] == "Float"
+    assert fn._bn_input_types["robot_width_m"] == "Float"
     assert fn._bn_output_types["scene"] == "Dict"
     assert fn._bn_output_types["pose"] == "Dict"
     assert fn._bn_output_types["map"] == "Dict"
@@ -229,6 +240,51 @@ def test_slam_uses_stream_counter_when_sensor_timestamp_moves_backwards(monkeypa
     assert processed == [1, 2]
     assert result["live"] is True
     assert result["status"]["received"] == 2
+    slam_runtime.stop_slam()
+
+
+def test_stationary_robot_does_not_grow_pose_graph_or_drift(monkeypatch):
+    slam_runtime.stop_slam()
+    state = {"received": 1}
+    local = _points()
+
+    def scan_reader(_source_value):
+        message = _message(state["received"])["message"]
+        return {
+            "message": message,
+            "messages": [message],
+            "received": state["received"],
+            "status": {"state": "ready", "source_fresh": True, "received": state["received"]},
+        }
+
+    monkeypatch.setattr(
+        warp_points,
+        "process_laser_scan",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "filtered_points": local.astype(float).tolist(),
+            "kernel_ms": 0.1,
+        },
+    )
+    _NODE_REGISTRY["SLAM"]({
+        "action": "start",
+        "source": _source(),
+        "slam_id": "stationary",
+        "mode": "editor",
+        "device": "cpu",
+        "keyframe_interval_s": 0.1,
+        "__message_stream_reader__": scan_reader,
+    })
+    for received in range(2, 40):
+        state["received"] = received
+        result = slam_runtime.slam_status("stationary")
+
+    assert result["scene"]["slam"]["keyframes"] == 1
+    assert result["scene"]["slam"]["loop_closures"] == 0
+    assert abs(result["pose"]["x_m"]) < 1.0e-9
+    assert abs(result["pose"]["y_m"]) < 1.0e-9
+    assert abs(result["pose"]["yaw_rad"]) < 1.0e-9
+    assert result["status"]["received"] == 39
     slam_runtime.stop_slam()
 
 

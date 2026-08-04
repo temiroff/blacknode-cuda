@@ -19,6 +19,9 @@ def main() -> int:
     parser.add_argument("--sensor-x", type=float, default=0.0)
     parser.add_argument("--sensor-y", type=float, default=0.0)
     parser.add_argument("--sensor-yaw", type=float, default=0.0)
+    parser.add_argument("--robot-length", type=float, default=0.25)
+    parser.add_argument("--robot-width", type=float, default=0.22)
+    parser.add_argument("--robot-height", type=float, default=0.08)
     parser.add_argument("--point-radius", type=float, default=0.025)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--scan-hz", type=float, default=0.25)
@@ -65,6 +68,7 @@ def main() -> int:
         filter_max_m=args.filter_max,
         stride=max(1, args.stride),
         sensor_pose=(args.sensor_x, args.sensor_y, args.sensor_yaw),
+        robot_size=(args.robot_length, args.robot_width, args.robot_height),
         show_raw=args.show_raw,
         show_filtered=args.show_filtered,
         point_radius=args.point_radius,

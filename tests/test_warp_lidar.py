@@ -245,6 +245,8 @@ def test_dense_scan_viewer_uses_file_handoff_instead_of_command_payload(monkeypa
         assert "--scan-base64" not in arguments
         assert "--persist-scans" in arguments
         assert "--max-accumulated-points" in arguments
+        assert arguments[arguments.index("--robot-length") + 1] == "0.25"
+        assert arguments[arguments.index("--robot-width") + 1] == "0.22"
         scan_path = Path(arguments[arguments.index("--scan-file") + 1])
         assert json.loads(scan_path.read_text(encoding="utf-8"))["ranges"] == scan["ranges"]
         assert max(len(str(value)) for value in arguments) < 1024

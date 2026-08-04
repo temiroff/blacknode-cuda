@@ -17,6 +17,9 @@ from . import viewer_runtime, warp_viewer_runtime
 _SESSIONS: dict[str, dict[str, Any]] = {}
 _LOCK = threading.RLock()
 _MAX_EDITOR_POINTS = 20_000
+_MIN_MATCH_SCORE_GAIN = 0.02
+_STATIONARY_TRANSLATION_M = 0.01
+_STATIONARY_ROTATION_RAD = math.radians(0.5)
 
 
 def _safe_id(value: str) -> str:
@@ -125,7 +128,10 @@ def correlative_match(
                     score = _match_score(local, occupied, candidate, resolution)
                     # Prefer the prior when overlap is tied; this prevents a
                     # stationary scan from drifting between equivalent cells.
-                    if score > candidate_score + 1.0e-9:
+                    # LaserScan overlap is quantized and frequently has many
+                    # almost-equivalent poses. Do not turn tiny score changes
+                    # from sensor noise into visible robot motion.
+                    if score > candidate_score + _MIN_MATCH_SCORE_GAIN:
                         candidate_best = candidate
                         candidate_score = score
         return candidate_best, candidate_score
@@ -262,17 +268,16 @@ def _map_points(session: dict[str, Any]) -> Any:
 
 
 def _should_add_keyframe(session: dict[str, Any], pose: Any, scan_time_ns: int) -> bool:
+    del scan_time_ns
     keyframes = session.get("keyframes") or []
     if not keyframes:
         return True
     previous = keyframes[-1]
     delta = _relative(previous["pose"], pose)
-    elapsed = max(0.0, (scan_time_ns - int(previous.get("source_time_ns") or 0)) / 1.0e9)
     options = session["options"]
     return (
         math.hypot(float(delta[0]), float(delta[1])) >= float(options["keyframe_translation_m"])
         or abs(float(delta[2])) >= float(options["keyframe_rotation_rad"])
-        or elapsed >= float(options["keyframe_interval_s"])
     )
 
 
@@ -369,9 +374,9 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "frame": "map",
         "sequence": int(scan.get("source_time_ns") or 0),
         "points": display.astype(float).tolist(),
-        "colors": [[0.05, 0.62, 0.82]] * len(display),
+        "colors": [[0.04, 0.36, 0.48]] * len(display),
         "current_points": current_world.astype(float).tolist(),
-        "current_colors": [[1.0, 0.82, 0.18]] * len(current_world),
+        "current_colors": [[0.0, 0.78, 1.0]] * len(current_world),
         "point_count": len(map_points),
         "current_point_count": len(current_world),
         "accumulated_scan_count": len(keyframes),
@@ -384,6 +389,11 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
             "x_m": float(current_pose[0]),
             "y_m": float(current_pose[1]),
             "yaw_rad": float(current_pose[2]),
+        },
+        "robot": {
+            "length_m": float(session["options"].get("robot_length_m") or 0.25),
+            "width_m": float(session["options"].get("robot_width_m") or 0.22),
+            "height_m": float(session["options"].get("robot_height_m") or 0.08),
         },
         "scan": {
             "angle_min_rad": float(scan.get("angle_min") or 0.0),
@@ -422,8 +432,10 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
             "map_limited": bool(session.get("map_limited")),
         },
         "animation": {
-            "enabled": False,
-            "show_rays": False,
+            "enabled": bool(session["options"].get("animate_scan", True)),
+            "show_rays": bool(session["options"].get("show_rays", True)),
+            "ray_trail_count": 48,
+            "pulse_hz": max(0.25, min(30.0, 1.0 / max(0.001, float(scan.get("scan_time") or 0.1)))),
             "accumulate_hits": not bool(session.get("mapping_paused")),
         },
         "device": str(session.get("device") or ""),
@@ -498,6 +510,10 @@ def _update_native_viewer(session: dict[str, Any], scan: dict[str, Any], pose: A
                 **options,
                 "device": session["device"],
                 "live": True,
+                # Keep the native renderer on the direct CUDA/OpenGL interop
+                # path. The editor overlays the animated ray sweep.
+                "animate_scan": False,
+                "show_rays": False,
                 "accumulate_hits": not bool(session.get("mapping_paused")),
             },
         )
@@ -571,9 +587,16 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         pose_value if pose_value is not None else [0.0, 0.0, 0.0],
         dtype=np.float64,
     )
+    odometry_stationary = False
     if session.get("source_time_ns"):
         if odometry is not None and session.get("last_odometry") is not None:
-            initial = _compose(previous_pose, _relative(session["last_odometry"], odometry))
+            odometry_delta = _relative(session["last_odometry"], odometry)
+            odometry_stationary = (
+                math.hypot(float(odometry_delta[0]), float(odometry_delta[1]))
+                < _STATIONARY_TRANSLATION_M
+                and abs(float(odometry_delta[2])) < _STATIONARY_ROTATION_RAD
+            )
+            initial = previous_pose.copy() if odometry_stationary else _compose(previous_pose, odometry_delta)
         elif session.get("previous_pose") is not None:
             initial = _compose(previous_pose, _relative(session["previous_pose"], previous_pose))
         else:
@@ -588,6 +611,8 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
                 linear_window=float(options["match_linear_window_m"]),
                 angular_window=float(options["match_angular_window_rad"]),
             )
+            if odometry_stationary:
+                pose = previous_pose.copy()
         else:
             pose, score = initial, 0.0
     else:
@@ -679,8 +704,10 @@ def _update_session(session: dict[str, Any]) -> None:
         session["live"] = True
         return
     try:
-        for scan in unseen:
-            _process_scan(session, scan)
+        # SLAM is a live estimator, not a replay queue. If processing briefly
+        # falls behind, use the newest complete scan and the newest odometry
+        # prior instead of making the operator wait while stale frames cook.
+        _process_scan(session, unseen[-1])
         if received > 0:
             session["source_received"] = received
             status = dict(session.get("status") or {})
