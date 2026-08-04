@@ -19,10 +19,12 @@ Use **Packages → blacknode-cuda → Install prerequisites** after installation
 | `capability` | On | `GPUCapability`, `GPURequirement` |
 | `image-processing` | On | `CUDAImageFilter`, `CUDAImageFilterStream` |
 | `tensor-operations` | On | `TensorCoreGEMM`, `CUTLASS` |
-| `spatial-processing` | On | `Viewer`, `WarpLaserScanFilter` |
+| `spatial-processing` | On | `Viewer`, `SLAM`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
 `CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and optional pose streams, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry` and `PoseStamped` messages register scan history directly. A `TFMessage` stream can chain `pose_parent_frame` to `pose_child_frame`; `auto` targets the LaserScan frame. Connect `/tf_static` through a second generic ROS2 stream with `qos=transient_local` when fixed links are separate. The view provides 3D orbit controls, a counterclockwise ray sweep, reported angular coverage, bounded history, and an accumulation toggle; Off follows only the latest scan. LaserScan geometry remains planar. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
+
+`SLAM` consumes the same generic scan stream and optional odometry stream. It performs scan matching, builds a bounded metric point map, adds loop-closure constraints, optimizes the keyframe pose graph, and publishes the map, estimated pose, status, and interactive scene. Open the **ROS2 SLAM** template, select the paired device, set the topic names, and press **Go live**.
 
 ## Included workflows
 
@@ -30,6 +32,7 @@ Use **Packages → blacknode-cuda → Install prerequisites** after installation
 - CUTLASS image and sustained GEMM examples
 - LiDAR starter workflows supplied by `blacknode-perception`, which owns the normalized sensor contract
 - ROS 2 device stream to the generic live `Viewer`
+- ROS 2 scan and odometry streams to live `SLAM`
 
 Select `cpu` for portable Warp verification or `cuda:0` for GPU execution. Enable `compare_numpy` when a warmed correctness and timing comparison is needed. Benchmarks report the device, data shape/type, warmup conditions, synchronized timing, and correctness result.
 
