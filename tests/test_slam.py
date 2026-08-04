@@ -145,3 +145,88 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_output_types["pose"] == "Dict"
     assert fn._bn_output_types["map"] == "Dict"
     assert fn._bn_live_capable is True
+
+
+def test_slam_displays_sparse_live_scan_before_it_can_localize(monkeypatch):
+    slam_runtime.stop_slam()
+    sparse = _points()[:3]
+    monkeypatch.setattr(
+        warp_points,
+        "process_laser_scan",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "filtered_points": sparse.astype(float).tolist(),
+            "kernel_ms": 0.1,
+        },
+    )
+
+    result = _NODE_REGISTRY["SLAM"]({
+        "action": "start",
+        "source": _source(),
+        "slam_id": "sparse-live",
+        "mode": "editor",
+        "device": "cpu",
+        "__message_stream_reader__": lambda _source_value: {
+            **_message(0),
+            "messages": [_message(0)["message"]],
+            "received": 1,
+            "status": {
+                "state": "ready",
+                "source_fresh": True,
+                "received": 1,
+                "last_message_time_ns": 1,
+            },
+        },
+    })
+
+    assert result["live"] is True
+    assert result["scene"]["current_point_count"] == 3
+    assert result["scene"]["point_count"] == 0
+    assert result["status"]["state"] == "waiting"
+    assert "at least 8 valid returns" in result["report"]
+    slam_runtime.stop_slam()
+
+
+def test_slam_uses_stream_counter_when_sensor_timestamp_moves_backwards(monkeypatch):
+    slam_runtime.stop_slam()
+    state = {"received": 1, "second": 10}
+    processed = []
+
+    def process(*_args, **_kwargs):
+        processed.append(state["received"])
+        return {
+            "ok": True,
+            "filtered_points": _points().astype(float).tolist(),
+            "kernel_ms": 0.1,
+        }
+
+    def reader(_source_value):
+        message = _message(state["second"])["message"]
+        return {
+            "message": message,
+            "messages": [message],
+            "received": state["received"],
+            "status": {
+                "state": "ready",
+                "source_fresh": True,
+                "received": state["received"],
+                "last_message_time_ns": state["received"],
+            },
+        }
+
+    monkeypatch.setattr(warp_points, "process_laser_scan", process)
+    _NODE_REGISTRY["SLAM"]({
+        "action": "start",
+        "source": _source(),
+        "slam_id": "counter-sequenced",
+        "mode": "editor",
+        "device": "cpu",
+        "__message_stream_reader__": reader,
+    })
+    state.update(received=2, second=1)
+    result = slam_runtime.slam_status("counter-sequenced")
+
+    assert processed == [1, 2]
+    assert result["live"] is True
+    assert result["status"]["received"] == 2
+    slam_runtime.stop_slam()

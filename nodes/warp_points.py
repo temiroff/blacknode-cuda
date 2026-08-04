@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import math
 import time
 from typing import Any, Callable
@@ -27,6 +28,29 @@ stop_runtime_services = managed_viewer_rt.stop_runtime_services
 
 
 _CATEGORY = "NVIDIA CUDA"
+
+_INTEROP_VERTEX_SHADER = """
+#version 330 core
+layout (location = 0) in vec3 position;
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+void main() {
+    gl_Position = projection * view * model * vec4(position, 1.0);
+}
+"""
+
+_INTEROP_FRAGMENT_SHADER = """
+#version 330 core
+uniform vec3 point_color;
+uniform float alpha;
+out vec4 fragment_color;
+void main() {
+    vec2 centered = gl_PointCoord - vec2(0.5);
+    if (dot(centered, centered) > 0.25) discard;
+    fragment_color = vec4(point_color, alpha);
+}
+"""
 
 
 if wp is not None:
@@ -79,6 +103,51 @@ if wp is not None:
             visible[index] = source[index]
         else:
             visible[index] = wp.vec3(0.0, 0.0, hidden_z)
+
+    @wp.kernel
+    def _clear_interop_points_kernel(points: wp.array(dtype=wp.vec3)):
+        index = wp.tid()
+        points[index] = wp.vec3(0.0, 0.0, -1000.0)
+
+    @wp.kernel
+    def _laser_scan_interop_kernel(
+        ranges: wp.array(dtype=wp.float32),
+        angle_min: wp.float32,
+        angle_increment: wp.float32,
+        filter_min: wp.float32,
+        filter_max: wp.float32,
+        sensor_x: wp.float32,
+        sensor_y: wp.float32,
+        sensor_yaw: wp.float32,
+        stride: wp.int32,
+        append_history: wp.int32,
+        history_capacity: wp.int32,
+        current_points: wp.array(dtype=wp.vec3),
+        history_points: wp.array(dtype=wp.vec3),
+        history_count: wp.array(dtype=wp.int32),
+    ):
+        index = wp.tid()
+        distance = ranges[index]
+        valid = (
+            distance > 0.0
+            and distance < 1.0e20
+            and distance >= filter_min
+            and distance <= filter_max
+            and index % stride == 0
+        )
+        if valid:
+            angle = angle_min + wp.float32(index) * angle_increment + sensor_yaw
+            point = wp.vec3(
+                sensor_x + distance * wp.cos(angle),
+                sensor_y + distance * wp.sin(angle),
+                0.0,
+            )
+            current_points[index] = point
+            if append_history != 0:
+                sequence = wp.atomic_add(history_count, 0, 1)
+                history_points[sequence % history_capacity] = point
+        else:
+            current_points[index] = wp.vec3(0.0, 0.0, -1000.0)
 
 
 def _numpy_scan_baseline(
@@ -536,6 +605,227 @@ def viewer(ctx: dict) -> dict:
     )
 
 
+def _run_gpu_interop_viewer_loop(
+    *,
+    renderer: Any,
+    scan_source: Callable[[], dict],
+    selected_device: Any,
+    filter_min_m: float,
+    filter_max_m: float,
+    stride: int,
+    sensor_pose: tuple[float, float, float],
+    point_radius: float,
+    fps: int,
+    accumulate_hits: bool,
+    persist_scans: bool,
+    max_accumulated_points: int,
+    title: str,
+) -> tuple[bool, str]:
+    """Render Warp output through CUDA-registered OpenGL buffers."""
+    if np is None or wp is None or not getattr(selected_device, "is_cuda", False):
+        return False, "CUDA device unavailable"
+    registered_buffer = getattr(wp, "RegisteredGLBuffer", None)
+    if registered_buffer is None:
+        return False, "Warp RegisteredGLBuffer is unavailable"
+
+    try:
+        import pyglet
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        renderer._switch_context()
+        gl = pyglet.gl
+        program = ShaderProgram(
+            Shader(_INTEROP_VERTEX_SHADER, "vertex"),
+            Shader(_INTEROP_FRAGMENT_SHADER, "fragment"),
+        )
+        uniform_model = gl.glGetUniformLocation(program.id, b"model")
+        uniform_view = gl.glGetUniformLocation(program.id, b"view")
+        uniform_projection = gl.glGetUniformLocation(program.id, b"projection")
+        uniform_color = gl.glGetUniformLocation(program.id, b"point_color")
+        uniform_alpha = gl.glGetUniformLocation(program.id, b"alpha")
+
+        def create_shared_buffer(vertex_count: int):
+            vao = gl.GLuint()
+            vbo = gl.GLuint()
+            gl.glGenVertexArrays(1, vao)
+            gl.glGenBuffers(1, vbo)
+            gl.glBindVertexArray(vao)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+            gl.glBufferData(
+                gl.GL_ARRAY_BUFFER,
+                vertex_count * 3 * np.dtype(np.float32).itemsize,
+                None,
+                gl.GL_DYNAMIC_DRAW,
+            )
+            gl.glVertexAttribPointer(
+                0,
+                3,
+                gl.GL_FLOAT,
+                gl.GL_FALSE,
+                3 * np.dtype(np.float32).itemsize,
+                ctypes.c_void_p(0),
+            )
+            gl.glEnableVertexAttribArray(0)
+            gl.glBindVertexArray(0)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+            return vao, vbo, registered_buffer(
+                int(vbo.value),
+                selected_device,
+                fallback_to_copy=False,
+            )
+
+        current_capacity = 100_000
+        history_capacity = max(
+            1_000,
+            min(250_000, int(max_accumulated_points)),
+        )
+        current_vao, _current_vbo, current_buffer = create_shared_buffer(current_capacity)
+        history_vao, _history_vbo, history_buffer = create_shared_buffer(history_capacity)
+        history_count = wp.zeros(1, dtype=wp.int32, device=selected_device)
+
+        current_points = current_buffer.map(dtype=wp.vec3, shape=(current_capacity,))
+        history_points = history_buffer.map(dtype=wp.vec3, shape=(history_capacity,))
+        try:
+            wp.launch(
+                _clear_interop_points_kernel,
+                dim=current_capacity,
+                inputs=[current_points],
+                device=selected_device,
+            )
+            wp.launch(
+                _clear_interop_points_kernel,
+                dim=history_capacity,
+                inputs=[history_points],
+                device=selected_device,
+            )
+            wp.synchronize_device(selected_device)
+        finally:
+            history_buffer.unmap()
+            current_buffer.unmap()
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+    current_count = 0
+    active_sensor_pose = sensor_pose
+    active_robot_pose = (0.0, 0.0, 0.0)
+    last_identity: tuple[Any, ...] | None = None
+    frame = 0
+
+    def matrix_pointer(matrix: Any):
+        return np.asarray(matrix, dtype=np.float32).ctypes.data_as(
+            ctypes.POINTER(ctypes.c_float),
+        )
+
+    def draw_interop_points() -> None:
+        gl.glUseProgram(program.id)
+        gl.glUniformMatrix4fv(
+            uniform_model, 1, gl.GL_FALSE, matrix_pointer(renderer._model_matrix),
+        )
+        gl.glUniformMatrix4fv(
+            uniform_view, 1, gl.GL_FALSE, matrix_pointer(renderer._view_matrix),
+        )
+        gl.glUniformMatrix4fv(
+            uniform_projection, 1, gl.GL_FALSE, matrix_pointer(renderer._projection_matrix),
+        )
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        if persist_scans and accumulate_hits:
+            gl.glUniform3f(uniform_color, 0.04, 0.42, 0.58)
+            gl.glUniform1f(uniform_alpha, 0.72)
+            gl.glPointSize(max(2.0, point_radius * 90.0))
+            gl.glBindVertexArray(history_vao)
+            gl.glDrawArrays(gl.GL_POINTS, 0, history_capacity)
+        gl.glUniform3f(uniform_color, 1.0, 0.80, 0.12)
+        gl.glUniform1f(uniform_alpha, 1.0)
+        gl.glPointSize(max(3.0, point_radius * 130.0))
+        gl.glBindVertexArray(current_vao)
+        gl.glDrawArrays(gl.GL_POINTS, 0, current_count)
+        gl.glBindVertexArray(0)
+        gl.glDisable(gl.GL_BLEND)
+
+    renderer.render_3d_callbacks.append(draw_interop_points)
+
+    while renderer.is_running():
+        scan = scan_source()
+        identity = (
+            scan.get("source_time_ns"),
+            scan.get("receive_time_ns"),
+            len(scan.get("ranges") or []),
+        ) if isinstance(scan, dict) else None
+        if scan and identity != last_identity:
+            viewer_pose = scan.get("viewer_pose") if isinstance(scan.get("viewer_pose"), dict) else {}
+            active_sensor_pose = (
+                float(viewer_pose["x_m"]) if viewer_pose.get("x_m") is not None else sensor_pose[0],
+                float(viewer_pose["y_m"]) if viewer_pose.get("y_m") is not None else sensor_pose[1],
+                float(viewer_pose["yaw_rad"]) if viewer_pose.get("yaw_rad") is not None else sensor_pose[2],
+            )
+            robot_pose = scan.get("viewer_robot_pose") if isinstance(scan.get("viewer_robot_pose"), dict) else {}
+            active_robot_pose = (
+                float(robot_pose.get("x_m") or 0.0),
+                float(robot_pose.get("y_m") or 0.0),
+                float(robot_pose.get("yaw_rad") or 0.0),
+            )
+            ranges = scan.get("ranges") if isinstance(scan.get("ranges"), list) else []
+            ranges_np = np.asarray(ranges[:current_capacity], dtype=np.float32)
+            current_count = int(ranges_np.size)
+            if current_count:
+                minimum = max(float(scan.get("range_min") or 0.0), float(filter_min_m))
+                sensor_maximum = float(scan.get("range_max") or 0.0)
+                requested_maximum = max(minimum, float(filter_max_m))
+                maximum = min(sensor_maximum, requested_maximum) if sensor_maximum > 0.0 else requested_maximum
+                ranges_wp = wp.array(ranges_np, dtype=wp.float32, device=selected_device)
+                current_points = current_buffer.map(
+                    dtype=wp.vec3,
+                    shape=(current_capacity,),
+                )
+                history_points = history_buffer.map(
+                    dtype=wp.vec3,
+                    shape=(history_capacity,),
+                )
+                try:
+                    wp.launch(
+                        _laser_scan_interop_kernel,
+                        dim=current_count,
+                        inputs=[
+                            ranges_wp,
+                            float(scan.get("angle_min") or 0.0),
+                            float(scan.get("angle_increment") or 0.0),
+                            minimum,
+                            maximum,
+                            active_sensor_pose[0],
+                            active_sensor_pose[1],
+                            active_sensor_pose[2],
+                            max(1, int(stride)),
+                            int(bool(accumulate_hits and persist_scans)),
+                            history_capacity,
+                        ],
+                        outputs=[current_points, history_points, history_count],
+                        device=selected_device,
+                    )
+                    wp.synchronize_device(selected_device)
+                finally:
+                    history_buffer.unmap()
+                    current_buffer.unmap()
+            last_identity = identity
+
+        renderer.begin_frame(frame / max(1, fps))
+        renderer.render_sphere(
+            "robot_origin",
+            pos=(active_robot_pose[0], active_robot_pose[1], 0.0),
+            rot=(0.0, 0.0, 0.0, 1.0),
+            radius=max(0.04, point_radius * 2.0),
+            color=(1.0, 0.35, 0.15),
+        )
+        renderer.end_frame()
+        renderer.window.set_caption(
+            f"{title} | {current_count:,} rays | Warp CUDA → OpenGL interop | "
+            f"{'GPU history on' if accumulate_hits and persist_scans else 'current scan only'}"
+        )
+        frame += 1
+    renderer.close()
+    return True, ""
+
+
 def run_viewer_loop(
     *,
     scan_source: Callable[[], dict],
@@ -583,6 +873,36 @@ def run_viewer_loop(
         axis_scale=0.5,
         device=device,
     )
+    selected_device = wp.get_device(device)
+    if (
+        getattr(selected_device, "is_cuda", False)
+        and show_filtered
+        and not show_raw
+        and not animate_scan
+        and not show_rays
+        and not compare_numpy
+    ):
+        interop_used, interop_error = _run_gpu_interop_viewer_loop(
+            renderer=renderer,
+            scan_source=scan_source,
+            selected_device=selected_device,
+            filter_min_m=filter_min_m,
+            filter_max_m=filter_max_m,
+            stride=stride,
+            sensor_pose=sensor_pose,
+            point_radius=point_radius,
+            fps=fps,
+            accumulate_hits=accumulate_hits,
+            persist_scans=persist_scans,
+            max_accumulated_points=max_accumulated_points,
+            title=title,
+        )
+        if interop_used:
+            return
+        print(
+            f"Blacknode CUDA/OpenGL interop unavailable; using renderer fallback: {interop_error}",
+            flush=True,
+        )
     modes: list[Any]
     if compare_numpy:
         modes = ["warp", "numpy", "difference"]

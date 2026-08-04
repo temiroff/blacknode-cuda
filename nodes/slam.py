@@ -131,6 +131,8 @@ def slam(ctx: dict) -> dict:
             "pose_child_frame": str(ctx.get("pose_child_frame") or "auto").strip(),
             "fps": max(1, min(120, int(ctx.get("fps") or 30))),
             "point_radius_m": 0.025,
+            "show_raw": False,
+            "show_filtered": True,
             "animate_scan": False,
             "show_rays": False,
         },

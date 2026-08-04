@@ -475,6 +475,39 @@ def _outputs(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _update_native_viewer(session: dict[str, Any], scan: dict[str, Any], pose: Any) -> None:
+    if session["mode"] != "device":
+        return
+    options = session["options"]
+    native_scan = {
+        **scan,
+        "viewer_pose": {
+            "x_m": float(pose[0]),
+            "y_m": float(pose[1]),
+            "yaw_rad": float(pose[2]),
+        },
+        "history_registered": True,
+        "viewer_frame": "map",
+    }
+    native = session.get("native") if isinstance(session.get("native"), dict) else {}
+    if not native.get("running"):
+        native = warp_viewer_runtime.start_viewer(
+            viewer_id=session["slam_id"],
+            scan=native_scan,
+            options={
+                **options,
+                "device": session["device"],
+                "live": True,
+                "accumulate_hits": not bool(session.get("mapping_paused")),
+            },
+        )
+        session["native"] = native
+    else:
+        update = warp_viewer_runtime.update_viewer_scan(session["slam_id"], native_scan)
+        if not update.get("ok"):
+            session["native"] = update
+
+
 def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
     from .warp_points import process_laser_scan
 
@@ -492,8 +525,45 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
     if not processed.get("ok"):
         raise RuntimeError(str((processed.get("report") or {}).get("error") or "Warp scan processing failed"))
     local_points = np.asarray(processed.get("filtered_points") or [], dtype=np.float32)
+    if len(local_points) == 0:
+        raise RuntimeError("LaserScan has no valid returns inside the configured range")
+
+    scan_time_ns = int(scan.get("source_time_ns") or time.time_ns())
     if len(local_points) < 8:
-        raise RuntimeError("LaserScan has too few valid returns for SLAM")
+        pose_value = session.get("pose")
+        pose = np.asarray(
+            pose_value if pose_value is not None else [0.0, 0.0, 0.0],
+            dtype=np.float64,
+        )
+        scene = _scene(
+            session,
+            scan,
+            local_points,
+            float(processed.get("kernel_ms") or 0.0),
+        )
+        session.update(
+            live=True,
+            source_time_ns=scan_time_ns,
+            scene=scene,
+            status={
+                "kind": "blacknode.slam-status",
+                "schema_version": 1,
+                "state": "waiting",
+                "source_fresh": True,
+                "localized": False,
+                "mapping": not bool(session.get("mapping_paused")),
+                "valid_returns": len(local_points),
+                "error": (
+                    f"SLAM needs at least 8 valid returns; displaying {len(local_points)} live"
+                ),
+            },
+            report=(
+                f"SLAM is displaying {len(local_points)} live return(s) and waiting for "
+                "at least 8 valid returns to localize"
+            ),
+        )
+        _update_native_viewer(session, scan, pose)
+        return
 
     odometry = _read_odometry(session, scan)
     pose_value = session.get("pose")
@@ -530,7 +600,6 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
     session["match_score"] = float(score)
     if odometry is not None:
         session["last_odometry"] = odometry
-    scan_time_ns = int(scan.get("source_time_ns") or time.time_ns())
     if not session.get("mapping_paused") and _should_add_keyframe(session, pose, scan_time_ns):
         _add_keyframe(session, local_points, pose, scan_time_ns, score)
         if session.get("keyframes"):
@@ -561,28 +630,7 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         ),
     )
 
-    if session["mode"] == "device":
-        native_scan = {
-            **scan,
-            "viewer_pose": {"x_m": float(pose[0]), "y_m": float(pose[1]), "yaw_rad": float(pose[2])},
-            "history_registered": True,
-            "viewer_frame": "map",
-        }
-        native = session.get("native") if isinstance(session.get("native"), dict) else {}
-        if not native.get("running"):
-            native = warp_viewer_runtime.start_viewer(
-                viewer_id=session["slam_id"],
-                scan=native_scan,
-                options={
-                    **options,
-                    "device": session["device"],
-                    "live": True,
-                    "accumulate_hits": not bool(session.get("mapping_paused")),
-                },
-            )
-            session["native"] = native
-        else:
-            warp_viewer_runtime.update_viewer_scan(session["slam_id"], native_scan)
+    _update_native_viewer(session, scan, pose)
 
 
 def _update_session(session: dict[str, Any]) -> None:
@@ -597,7 +645,22 @@ def _update_session(session: dict[str, Any]) -> None:
         outputs = {"status": {"state": "unavailable", "source_fresh": False}}
     source_status = outputs.get("status") if isinstance(outputs.get("status"), dict) else {}
     scans = _scan_values(outputs, session["source"])
-    unseen = [scan for scan in scans if int(scan.get("source_time_ns") or 0) > int(session.get("source_time_ns") or 0)]
+    received = int(outputs.get("received") or source_status.get("received") or 0)
+    previous_received = int(session.get("source_received") or 0)
+    if received > 0:
+        if received == previous_received:
+            unseen = []
+        elif received > previous_received:
+            unseen = scans[-min(len(scans), max(1, received - previous_received)):]
+        else:
+            # A restarted subscriber resets its counter. The newest scan is new
+            # even when its sensor clock is behind the previous process.
+            unseen = scans[-1:]
+    else:
+        unseen = [
+            scan for scan in scans
+            if int(scan.get("source_time_ns") or 0) > int(session.get("source_time_ns") or 0)
+        ]
     if not source_status.get("source_fresh") or not scans:
         error = str(source_status.get("error") or "SLAM is waiting for a fresh LaserScan message")
         session.update(
@@ -618,6 +681,11 @@ def _update_session(session: dict[str, Any]) -> None:
     try:
         for scan in unseen:
             _process_scan(session, scan)
+        if received > 0:
+            session["source_received"] = received
+            status = dict(session.get("status") or {})
+            status["received"] = received
+            session["status"] = status
     except Exception as exc:
         session.update(
             live=False,
@@ -692,6 +760,7 @@ def start_slam(
             "previous_pose": None,
             "last_odometry": None,
             "source_time_ns": 0,
+            "source_received": 0,
             "loop_closures": 0,
             "scene": {},
             "native": {},

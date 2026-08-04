@@ -3,6 +3,9 @@ import math
 import json
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 import blacknode  # noqa: F401
 from blacknode.node import _NODE_REGISTRY
 from blacknode.pkg.blacknode_cuda import warp_points
@@ -101,6 +104,43 @@ def test_warp_filter_compares_warmed_numpy_reference():
     assert benchmark["warp_end_to_end_ms"] > 0.0
     assert benchmark["end_to_end_speedup"] > 0.0
     assert benchmark["max_abs_error_m"] < 1.0e-5
+
+
+def test_cuda_opengl_kernel_writes_current_and_bounded_history_on_cpu():
+    wp = warp_points.wp
+    if wp is None:
+        return
+    ranges = wp.array(
+        np.asarray([1.0, np.nan, 2.0, 20.0], dtype=np.float32),
+        dtype=wp.float32,
+        device="cpu",
+    )
+    current = wp.zeros(4, dtype=wp.vec3, device="cpu")
+    history = wp.zeros(8, dtype=wp.vec3, device="cpu")
+    history_count = wp.zeros(1, dtype=wp.int32, device="cpu")
+
+    wp.launch(
+        warp_points._laser_scan_interop_kernel,
+        dim=4,
+        inputs=[ranges, 0.0, math.pi / 2.0, 0.1, 10.0, 0.0, 0.0, 0.0, 1, 1, 8],
+        outputs=[current, history, history_count],
+        device="cpu",
+    )
+
+    current_values = current.numpy()
+    assert history_count.numpy()[0] == 2
+    np.testing.assert_allclose(current_values[0], [1.0, 0.0, 0.0], atol=1.0e-6)
+    assert current_values[1, 2] == -1000.0
+    assert current_values[2, 0] == pytest.approx(-2.0, abs=1.0e-5)
+    assert current_values[3, 2] == -1000.0
+
+
+def test_native_slam_viewer_uses_registered_gl_buffers_with_fallback():
+    source = Path(warp_points.__file__).read_text(encoding="utf-8")
+
+    assert "RegisteredGLBuffer" in source
+    assert "fallback_to_copy=False" in source
+    assert "CUDA/OpenGL interop unavailable; using renderer fallback" in source
 
 
 def test_static_viewer_node_uses_managed_runtime(monkeypatch):
