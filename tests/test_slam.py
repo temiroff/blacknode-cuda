@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 import pytest
@@ -250,6 +251,7 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_input_types["source"] == "Dict"
     assert fn._bn_input_types["odometry"] == "Dict"
     assert fn._bn_input_types["particle_localization"] == "Dict"
+    assert fn._bn_input_types["dynamic_occupancy"] == "Dict"
     assert fn._bn_input_types["robot_length_m"] == "Float"
     assert fn._bn_input_types["robot_width_m"] == "Float"
     assert fn._bn_input_defaults["downsample_stride"] == 1
@@ -260,6 +262,103 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_output_types["pose"] == "Dict"
     assert fn._bn_output_types["map"] == "Dict"
     assert fn._bn_live_capable is True
+
+
+def test_dynamic_occupancy_stage_is_explicit():
+    result = _NODE_REGISTRY["WarpDynamicOccupancy"]({
+        "enabled": True,
+        "stable_radius_m": 0.07,
+        "tracking_radius_m": 0.4,
+        "minimum_speed_mps": 0.15,
+        "maximum_points": 5_000,
+        "display_points": 600,
+        "trail_seconds": 0.25,
+    })
+
+    assert result["stage"]["kind"] == "blacknode.warp-dynamic-occupancy"
+    assert result["stage"]["stable_radius_m"] == pytest.approx(0.07)
+    assert result["stage"]["tracking_radius_m"] == pytest.approx(0.4)
+    assert result["stage"]["maximum_points"] == 5_000
+    assert result["stage"]["display_points"] == 600
+    assert result["workload"] == "up to 5,000 registered returns per fresh scan"
+
+
+def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypatch):
+    slam_runtime.stop_slam()
+    fixed = np.asarray([[float(index), 0.0, 0.0] for index in range(10)], dtype=np.float32)
+    moved = fixed.copy()
+    moved[4, 0] += 0.2
+    processed_scans = [fixed, moved]
+    process_index = 0
+
+    def process_scan(*_args, **_kwargs):
+        nonlocal process_index
+        points = processed_scans[min(process_index, len(processed_scans) - 1)]
+        process_index += 1
+        return {
+            "ok": True,
+            "filtered_points": points.astype(float).tolist(),
+            "filtered_indices": list(range(len(points))),
+            "kernel_ms": 0.2,
+        }
+
+    monkeypatch.setattr(warp_points, "process_laser_scan", process_scan)
+    stage = _NODE_REGISTRY["WarpDynamicOccupancy"]({
+        "enabled": True,
+        "stable_radius_m": 0.05,
+        "tracking_radius_m": 0.3,
+        "minimum_speed_mps": 0.1,
+        "display_points": 32,
+    })["stage"]
+    reader_count = 0
+
+    def read_scan(_source_value):
+        nonlocal reader_count
+        reader_count += 1
+        sample_index = min(reader_count, 2)
+        message = _message(1)
+        message["message"]["header"]["stamp"]["nanosec"] = (
+            100_000_000 if sample_index == 2 else 0
+        )
+        return {
+            "messages": [message],
+            "received": sample_index,
+            "status": {
+                "state": "ready",
+                "source_fresh": True,
+                "last_message_time_ns": 1_000_000_000 + (sample_index - 1) * 100_000_000,
+            },
+        }
+
+    _NODE_REGISTRY["SLAM"]({
+        "action": "start",
+        "source": _source(),
+        "dynamic_occupancy": stage,
+        "slam_id": "dynamic-occupancy",
+        "mode": "editor",
+        "device": "cpu",
+        "__node_id__": "dynamic-slam-node",
+        "__message_stream_reader__": read_scan,
+    })
+
+    started = slam_runtime.slam_status("dynamic-occupancy")
+    for _ in range(50):
+        dynamic = started.get("scene", {}).get("dynamic_occupancy", {})
+        if dynamic.get("state") == "ready":
+            break
+        time.sleep(0.02)
+        started = slam_runtime.slam_status("dynamic-occupancy")
+
+    dynamic = started["scene"]["dynamic_occupancy"]
+    assert dynamic["state"] == "ready"
+    assert dynamic["backend"] == "warp-hash-grid"
+    assert dynamic["dynamic_points"] == 1
+    assert len(started["scene"]["dynamic_points"]) == 1
+    assert len(started["scene"]["dynamic_velocities"]) == 1
+    assert "_dynamic_mask" not in dynamic
+    assert started["scene"]["dynamic_points"][0][0] == pytest.approx(4.2)
+    assert started["scene"]["occupancy"]["rays"] == 9
+    slam_runtime.stop_slam()
 
 
 def test_particle_stage_is_explicit_and_slam_executes_it(monkeypatch):

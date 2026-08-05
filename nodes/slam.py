@@ -64,6 +64,7 @@ def slam_options(values: dict) -> dict:
         "source": Dict,
         "odometry": Dict,
         "particle_localization": Dict,
+        "dynamic_occupancy": Dict,
         "slam_id": Text(default="slam"),
         "mode": Enum(["editor", "device"], default="editor"),
         "device": Enum(["cuda:0", "cpu"], default="cuda:0"),
@@ -105,7 +106,7 @@ def slam_options(values: dict) -> dict:
         "viewer": Dict,
         "report": Text,
     },
-    primary_inputs=["source", "odometry", "particle_localization", "action", "mode"],
+    primary_inputs=["source", "odometry", "particle_localization", "dynamic_occupancy", "action", "mode"],
     primary_outputs=["scene", "pose", "map", "status", "report"],
     live=True,
 )
@@ -150,6 +151,11 @@ def slam(ctx: dict) -> dict:
         if isinstance(ctx.get("particle_localization"), dict)
         else {}
     )
+    dynamic_occupancy = (
+        ctx.get("dynamic_occupancy")
+        if isinstance(ctx.get("dynamic_occupancy"), dict)
+        else {}
+    )
     if particle_localization and particle_localization.get("kind") != "blacknode.warp-particle-localization":
         return {
             "running": False,
@@ -161,6 +167,17 @@ def slam(ctx: dict) -> dict:
             "viewer": {},
             "report": "Connect WarpParticleLocalization.stage to SLAM.particle_localization",
         }
+    if dynamic_occupancy and dynamic_occupancy.get("kind") != "blacknode.warp-dynamic-occupancy":
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "pose": {},
+            "map": {},
+            "status": {"state": "error", "error": "dynamic_occupancy must be a WarpDynamicOccupancy stage"},
+            "viewer": {},
+            "report": "Connect WarpDynamicOccupancy.stage to SLAM.dynamic_occupancy",
+        }
     reader = ctx.get("__message_stream_reader__")
     return slam_runtime.start_slam(
         slam_id=slam_id,
@@ -171,5 +188,6 @@ def slam(ctx: dict) -> dict:
         device=str(ctx.get("device") or "cuda:0"),
         options=slam_options(ctx),
         particle_localization=particle_localization,
+        dynamic_occupancy=dynamic_occupancy,
         source_reader=reader if callable(reader) else None,
     )

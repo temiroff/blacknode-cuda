@@ -27,7 +27,7 @@ sensor stream -> Warp stage descriptor -> managed compute/viewer -> scene
 
 ### 1. Dense LiDAR pose hypotheses
 
-Status: implementation started in `WarpParticleLocalization`.
+Status: implemented in `WarpParticleLocalization`.
 
 - Inputs: SLAM map, current LaserScan and pose prior owned by `SLAM`.
 - Work: score thousands of pose hypotheses against every valid LiDAR return.
@@ -39,14 +39,15 @@ Status: implementation started in `WarpParticleLocalization`.
 
 ### 2. Dynamic occupancy
 
+Status: implemented in `WarpDynamicOccupancy`.
+
 - Inputs: registered LiDAR history and optional depth point cloud.
 - Work: Warp hash-grid neighbor searches, temporal residuals and velocity
   estimates.
 - Visual: fixed walls remain cyan; moving objects and velocity trails use warm
   colors.
-- Planned nodes: `WarpDynamicOccupancy` stage connected to `SLAM` or a sensor
-  fusion viewer.
-- Planned template: `ROS2 Warp Dynamic Occupancy`.
+- Node: `WarpDynamicOccupancy` stage connected to `SLAM.dynamic_occupancy`.
+- Template: `ROS2 Warp Dynamic Occupancy`.
 
 ### 3. Parallel trajectory evaluation
 

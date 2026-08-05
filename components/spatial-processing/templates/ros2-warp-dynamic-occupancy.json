@@ -1,13 +1,13 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "ROS2 SLAM",
-  "saved_at": "2026-08-03T00:00:00",
+  "name": "ROS2 Warp Dynamic Occupancy",
+  "saved_at": "2026-08-04T00:00:00",
   "entrypoint": {"node_id": "slam", "port": "scene"},
   "metadata": {
     "template": true,
-    "description": "Select a paired compute device, subscribe to generic scan and odometry topics, localize with Warp-processed LaserScan data, optimize loop closures, and inspect the live metric map in the editor or a native device window.",
-    "color": "#76b900",
+    "description": "Select a paired compute device, subscribe to scan and odometry topics, and connect a visible Warp HashGrid stage that highlights moving returns and velocity trails inside the managed SLAM viewer.",
+    "color": "#ff8b79",
     "required_packages": ["blacknode-robot", "blacknode-ros2", "blacknode-cuda"]
   },
   "node_meta": {
@@ -29,7 +29,7 @@
         "action": "start",
         "topic": "/scan",
         "message_type": "sensor_msgs/msg/LaserScan",
-        "node_name": "blacknode_slam_scan",
+        "node_name": "blacknode_dynamic_scan",
         "qos": "sensor_data",
         "history": 20,
         "timeout": 10.0,
@@ -50,7 +50,7 @@
         "action": "start",
         "topic": "/odom",
         "message_type": "nav_msgs/msg/Odometry",
-        "node_name": "blacknode_slam_odometry",
+        "node_name": "blacknode_dynamic_odometry",
         "qos": "default",
         "history": 30,
         "timeout": 10.0,
@@ -64,12 +64,33 @@
       "input_defaults": {"action": "status", "topic": "/scan", "message_type": "", "node_name": "blacknode_ros2_topic", "qos": "default", "history": 10, "timeout": 10.0, "stale_after_seconds": 2.0},
       "input_choices": {"action": ["once", "start", "status", "stop"], "qos": ["default", "sensor_data", "reliable", "best_effort", "transient_local"]}
     },
+    "dynamic_occupancy": {
+      "id": "dynamic_occupancy",
+      "type": "WarpDynamicOccupancy",
+      "params": {
+        "enabled": true,
+        "stable_radius_m": 0.08,
+        "tracking_radius_m": 0.45,
+        "minimum_speed_mps": 0.12,
+        "maximum_age_s": 0.5,
+        "maximum_points": 65536,
+        "display_points": 1500,
+        "trail_seconds": 0.35,
+        "compare_cpu": false
+      },
+      "pos": [770, 560],
+      "inputs": ["enabled", "stable_radius_m", "tracking_radius_m", "minimum_speed_mps", "maximum_age_s", "maximum_points", "display_points", "trail_seconds", "compare_cpu"],
+      "outputs": ["stage", "enabled", "workload", "report"],
+      "input_types": {"enabled": "Bool", "stable_radius_m": "Float", "tracking_radius_m": "Float", "minimum_speed_mps": "Float", "maximum_age_s": "Float", "maximum_points": "Int", "display_points": "Int", "trail_seconds": "Float", "compare_cpu": "Bool"},
+      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
+      "input_defaults": {"enabled": true, "stable_radius_m": 0.08, "tracking_radius_m": 0.45, "minimum_speed_mps": 0.12, "maximum_age_s": 0.5, "maximum_points": 65536, "display_points": 1500, "trail_seconds": 0.35, "compare_cpu": false}
+    },
     "slam": {
       "id": "slam",
       "type": "SLAM",
       "params": {
         "action": "start",
-        "slam_id": "ros2_slam",
+        "slam_id": "ros2_dynamic_occupancy",
         "mode": "editor",
         "device": "cuda:0",
         "filter_min_m": 0.1,
@@ -100,7 +121,7 @@
         "pose_child_frame": "auto",
         "fps": 30
       },
-      "pos": [820, 120],
+      "pos": [1120, 120],
       "inputs": ["action", "source", "odometry", "particle_localization", "dynamic_occupancy", "slam_id", "mode", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "robot_length_m", "robot_width_m", "robot_height_m", "map_resolution_m", "occupancy_radius_m", "match_linear_window_m", "match_angular_window_deg", "tracking_min_score", "mapping_min_score", "keyframe_translation_m", "keyframe_rotation_deg", "keyframe_interval_s", "loop_closure_radius_m", "loop_closure_min_score", "loop_closure_min_separation", "max_keyframes", "max_map_points", "pose_sync_tolerance_s", "pose_parent_frame", "pose_child_frame", "fps"],
       "outputs": ["running", "live", "scene", "pose", "map", "status", "viewer", "report"],
       "input_types": {"action": "Text", "source": "Dict", "odometry": "Dict", "particle_localization": "Dict", "dynamic_occupancy": "Dict", "slam_id": "Text", "mode": "Text", "device": "Text", "filter_min_m": "Float", "filter_max_m": "Float", "downsample_stride": "Int", "sensor_x_m": "Float", "sensor_y_m": "Float", "sensor_yaw_rad": "Float", "robot_length_m": "Float", "robot_width_m": "Float", "robot_height_m": "Float", "map_resolution_m": "Float", "occupancy_radius_m": "Float", "match_linear_window_m": "Float", "match_angular_window_deg": "Float", "tracking_min_score": "Float", "mapping_min_score": "Float", "keyframe_translation_m": "Float", "keyframe_rotation_deg": "Float", "keyframe_interval_s": "Float", "loop_closure_radius_m": "Float", "loop_closure_min_score": "Float", "loop_closure_min_separation": "Int", "max_keyframes": "Int", "max_map_points": "Int", "pose_sync_tolerance_s": "Float", "pose_parent_frame": "Text", "pose_child_frame": "Text", "fps": "Int"},
@@ -113,6 +134,7 @@
     {"from": "device", "from_port": "device", "to": "scan", "to_port": "device"},
     {"from": "device", "from_port": "device", "to": "odometry", "to_port": "device"},
     {"from": "scan", "from_port": "stream", "to": "slam", "to_port": "source"},
-    {"from": "odometry", "from_port": "stream", "to": "slam", "to_port": "odometry"}
+    {"from": "odometry", "from_port": "stream", "to": "slam", "to_port": "odometry"},
+    {"from": "dynamic_occupancy", "from_port": "stage", "to": "slam", "to_port": "dynamic_occupancy"}
   ]
 }
