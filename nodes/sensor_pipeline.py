@@ -148,6 +148,262 @@ def warp_dynamic_occupancy(ctx: dict) -> dict:
 
 
 @node(
+    name="WarpDepthProjector",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description=(
+        "Configure live metric-depth validation, pinhole deprojection, surface "
+        "normals, and confidence for a managed Viewer. Connect a provider-neutral "
+        "depth stream to Viewer.source and this stage to Viewer.depth_projection."
+    ),
+    inputs={
+        "enabled": Bool(default=True),
+        "minimum_depth_m": Float(default=0.1),
+        "maximum_depth_m": Float(default=8.0),
+        "downsample_stride": Int(default=2),
+        "maximum_points": Int(default=50_000),
+        "stale_after_seconds": Float(default=2.0),
+        "target_frame": Text(default="base_link"),
+        "sensor_x_m": Float(default=0.0),
+        "sensor_y_m": Float(default=0.0),
+        "sensor_z_m": Float(default=0.0),
+        "sensor_roll_rad": Float(default=0.0),
+        "sensor_pitch_rad": Float(default=0.0),
+        "sensor_yaw_rad": Float(default=0.0),
+        "compare_cpu": Bool(default=False),
+    },
+    outputs={
+        "stage": Dict,
+        "enabled": Bool,
+        "workload": Text,
+        "report": Text,
+    },
+    primary_inputs=["enabled", "minimum_depth_m", "maximum_depth_m", "downsample_stride"],
+    primary_outputs=["stage", "report"],
+)
+def warp_depth_projector(ctx: dict) -> dict:
+    enabled = bool(ctx.get("enabled", True))
+    minimum_depth_m = max(0.001, min(100.0, float(ctx.get("minimum_depth_m") or 0.1)))
+    maximum_depth_m = max(
+        minimum_depth_m,
+        min(1_000.0, float(ctx.get("maximum_depth_m") or 8.0)),
+    )
+    stride = max(1, min(32, int(ctx.get("downsample_stride") or 2)))
+    maximum_points = max(64, min(250_000, int(ctx.get("maximum_points") or 50_000)))
+    stage = {
+        "kind": "blacknode.warp-depth-projector",
+        "schema_version": 1,
+        "enabled": enabled,
+        "minimum_depth_m": minimum_depth_m,
+        "maximum_depth_m": maximum_depth_m,
+        "stride": stride,
+        "maximum_points": maximum_points,
+        "stale_after_seconds": max(0.1, min(60.0, float(ctx.get("stale_after_seconds") or 2.0))),
+        "target_frame": str(ctx.get("target_frame") or "base_link").strip() or "base_link",
+        "sensor_x_m": float(ctx.get("sensor_x_m") or 0.0),
+        "sensor_y_m": float(ctx.get("sensor_y_m") or 0.0),
+        "sensor_z_m": float(ctx.get("sensor_z_m") or 0.0),
+        "sensor_roll_rad": float(ctx.get("sensor_roll_rad") or 0.0),
+        "sensor_pitch_rad": float(ctx.get("sensor_pitch_rad") or 0.0),
+        "sensor_yaw_rad": float(ctx.get("sensor_yaw_rad") or 0.0),
+        "compare_cpu": bool(ctx.get("compare_cpu", False)),
+    }
+    return {
+        "stage": stage,
+        "enabled": enabled,
+        "workload": f"one projected point per {stride} × {stride} depth pixels",
+        "report": (
+            f"Warp depth projection {'enabled' if enabled else 'disabled'}: "
+            f"{minimum_depth_m:.2f}–{maximum_depth_m:.2f} m, stride {stride}; "
+            "managed Viewer owns live binary frames and device buffers"
+        ),
+    }
+
+
+@node(
+    name="WarpTSDFIntegration",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description=(
+        "Configure a bounded device-resident TSDF volume for a managed RGB-D "
+        "Viewer. Each fresh pose-registered depth frame updates the persistent volume."
+    ),
+    inputs={
+        "enabled": Bool(default=True),
+        "require_pose": Bool(default=True),
+        "voxel_size_m": Float(default=0.08),
+        "truncation_m": Float(default=0.24),
+        "volume_radius_m": Float(default=3.0),
+        "volume_origin_x_m": Float(default=0.0),
+        "volume_origin_y_m": Float(default=0.0),
+        "volume_origin_z_m": Float(default=-1.0),
+        "maximum_voxels": Int(default=2_000_000),
+        "samples_per_ray": Int(default=7),
+        "integrate_color": Bool(default=True),
+    },
+    outputs={"stage": Dict, "enabled": Bool, "workload": Text, "report": Text},
+    primary_inputs=["enabled", "voxel_size_m", "volume_radius_m", "require_pose"],
+    primary_outputs=["stage", "report"],
+)
+def warp_tsdf_integration(ctx: dict) -> dict:
+    enabled = bool(ctx.get("enabled", True))
+    voxel_size = max(0.01, min(0.5, float(ctx.get("voxel_size_m") or 0.08)))
+    radius = max(0.25, min(25.0, float(ctx.get("volume_radius_m") or 3.0)))
+    truncation = max(voxel_size, min(2.0, float(ctx.get("truncation_m") or voxel_size * 3.0)))
+    maximum_voxels = max(8_000, min(8_000_000, int(ctx.get("maximum_voxels") or 2_000_000)))
+    samples = max(3, min(15, int(ctx.get("samples_per_ray") or 7)))
+    if samples % 2 == 0:
+        samples += 1
+    dimension = max(2, int(math.ceil(radius * 2.0 / voxel_size)))
+    requested_voxels = dimension ** 3
+    stage = {
+        "kind": "blacknode.warp-tsdf-integration",
+        "schema_version": 1,
+        "enabled": enabled,
+        "require_pose": bool(ctx.get("require_pose", True)),
+        "voxel_size_m": voxel_size,
+        "truncation_m": truncation,
+        "volume_radius_m": radius,
+        "volume_origin_x_m": float(ctx.get("volume_origin_x_m") or 0.0),
+        "volume_origin_y_m": float(ctx.get("volume_origin_y_m") or 0.0),
+        "volume_origin_z_m": float(ctx.get("volume_origin_z_m") if ctx.get("volume_origin_z_m") is not None else -1.0),
+        "maximum_voxels": maximum_voxels,
+        "samples_per_ray": samples,
+        "integrate_color": bool(ctx.get("integrate_color", True)),
+        "requested_voxels": requested_voxels,
+    }
+    fits = requested_voxels <= maximum_voxels
+    return {
+        "stage": stage,
+        "enabled": enabled,
+        "workload": f"{dimension}³ = {requested_voxels:,} persistent TSDF voxels",
+        "report": (
+            f"Warp TSDF {'enabled' if enabled else 'disabled'}: {voxel_size:.3f} m voxels, "
+            f"{truncation:.3f} m truncation, {radius:.2f} m radius, {samples} samples/ray"
+            + ("" if fits else f"; configuration exceeds the {maximum_voxels:,}-voxel limit")
+        ),
+    }
+
+
+@node(
+    name="WarpSurfaceExtraction",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description=(
+        "Configure parallel extraction of confidence-colored surface voxels "
+        "from the managed Warp TSDF volume for the shared 3D Viewer."
+    ),
+    inputs={
+        "enabled": Bool(default=True),
+        "iso_level": Float(default=0.0),
+        "surface_band": Float(default=0.2),
+        "minimum_weight": Float(default=1.0),
+        "maximum_points": Int(default=60_000),
+    },
+    outputs={"stage": Dict, "enabled": Bool, "workload": Text, "report": Text},
+    primary_inputs=["enabled", "surface_band", "minimum_weight", "maximum_points"],
+    primary_outputs=["stage", "report"],
+)
+def warp_surface_extraction(ctx: dict) -> dict:
+    enabled = bool(ctx.get("enabled", True))
+    stage = {
+        "kind": "blacknode.warp-surface-extraction",
+        "schema_version": 1,
+        "enabled": enabled,
+        "iso_level": max(-1.0, min(1.0, float(ctx.get("iso_level") or 0.0))),
+        "surface_band": max(0.01, min(1.0, float(ctx.get("surface_band") or 0.2))),
+        "minimum_weight": max(1.0, float(ctx.get("minimum_weight") or 1.0)),
+        "maximum_points": max(64, min(250_000, int(ctx.get("maximum_points") or 60_000))),
+    }
+    return {
+        "stage": stage,
+        "enabled": enabled,
+        "workload": f"up to {stage['maximum_points']:,} extracted surface points",
+        "report": (
+            f"Warp surface extraction {'enabled' if enabled else 'disabled'}: "
+            f"iso {stage['iso_level']:.2f} ± {stage['surface_band']:.2f}, "
+            f"minimum weight {stage['minimum_weight']:.1f}"
+        ),
+    }
+
+
+@node(
+    name="WarpSensorFusion",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description=(
+        "Configure synchronized LiDAR, metric-depth, and aligned-RGB fusion for "
+        "a managed Viewer, including Warp HashGrid residuals and bounded "
+        "extrinsic-calibration hypothesis scoring."
+    ),
+    inputs={
+        "enabled": Bool(default=True),
+        "require_pose": Bool(default=True),
+        "synchronization_tolerance_s": Float(default=0.1),
+        "maximum_alignment_distance_m": Float(default=0.35),
+        "minimum_depth_confidence": Float(default=0.1),
+        "maximum_points": Int(default=60_000),
+        "calibration_search": Bool(default=True),
+        "calibration_translation_m": Float(default=0.1),
+        "calibration_yaw_deg": Float(default=3.0),
+        "calibration_steps": Int(default=3),
+        "compare_cpu": Bool(default=False),
+    },
+    outputs={"stage": Dict, "enabled": Bool, "workload": Text, "report": Text},
+    primary_inputs=[
+        "enabled", "maximum_alignment_distance_m", "calibration_search",
+        "calibration_translation_m", "calibration_yaw_deg",
+    ],
+    primary_outputs=["stage", "report"],
+)
+def warp_sensor_fusion(ctx: dict) -> dict:
+    enabled = bool(ctx.get("enabled", True))
+    steps = max(1, min(5, int(ctx.get("calibration_steps") or 3)))
+    if steps % 2 == 0:
+        steps += 1
+    calibration_search = bool(ctx.get("calibration_search", True))
+    hypotheses = steps ** 3 if calibration_search else 1
+    maximum_points = max(64, min(250_000, int(ctx.get("maximum_points") or 60_000)))
+    stage = {
+        "kind": "blacknode.warp-sensor-fusion",
+        "schema_version": 1,
+        "enabled": enabled,
+        "require_pose": bool(ctx.get("require_pose", True)),
+        "synchronization_tolerance_s": max(
+            0.001, min(5.0, float(ctx.get("synchronization_tolerance_s") or 0.1))
+        ),
+        "maximum_alignment_distance_m": max(
+            0.01, min(5.0, float(ctx.get("maximum_alignment_distance_m") or 0.35))
+        ),
+        "minimum_depth_confidence": max(
+            0.0, min(1.0, float(ctx.get("minimum_depth_confidence") or 0.1))
+        ),
+        "maximum_points": maximum_points,
+        "calibration_search": calibration_search,
+        "calibration_translation_m": max(
+            0.0, min(1.0, float(ctx.get("calibration_translation_m") or 0.1))
+        ),
+        "calibration_yaw_deg": max(
+            0.0, min(20.0, float(ctx.get("calibration_yaw_deg") or 3.0))
+        ),
+        "calibration_steps": steps,
+        "compare_cpu": bool(ctx.get("compare_cpu", False)),
+    }
+    return {
+        "stage": stage,
+        "enabled": enabled,
+        "workload": (
+            f"up to {maximum_points:,} fused points across {hypotheses:,} "
+            "calibration hypotheses"
+        ),
+        "report": (
+            f"Warp sensor fusion {'enabled' if enabled else 'disabled'}: "
+            f"match ≤{stage['maximum_alignment_distance_m']:.2f} m, "
+            f"sync ≤{stage['synchronization_tolerance_s']:.3f} s, "
+            f"{hypotheses} calibration hypotheses"
+        ),
+    }
+@node(
     name="WarpTrajectoryEvaluator",
     component="spatial-processing",
     category=_CATEGORY,

@@ -1,4 +1,4 @@
-# Warp Sensor Compute Roadmap
+# Sensor Viewer and Warp Compute Roadmap
 
 Blacknode exposes Warp sensor calculations as reusable graph stages while a
 managed viewer or mapping node owns live scheduling and device-resident memory.
@@ -22,6 +22,27 @@ sensor stream -> Warp stage descriptor -> managed compute/viewer -> scene
   Scene payloads carry compact display samples rather than full compute state.
 - Templates provide one clear demonstration per workload. A combined sensor
   lab can compose the same stages after their individual contracts are stable.
+
+## Sensor-to-viewer list
+
+Each normalized physical sensor has a dedicated diagnostic view so an operator
+can inspect that feed independently before relying on downstream fusion or
+autonomy.
+
+| Sensor | Dedicated viewer | Status | What the operator sees |
+|---|---|---|---|
+| RGB camera | `Camera` / `CameraStream` preview | Implemented | Live image, stream health and freshness |
+| 2D LiDAR | `Viewer` | Implemented | Live scan rays, filtered points, coverage and registered history |
+| LiDAR SLAM | `SLAM` | Implemented | Map, B-logo robot pose, scan, occupancy and localization state |
+| Metric depth | `Viewer` + `WarpDepthProjector` | Implemented | Calibrated 3D depth surface, confidence and projection timing |
+| IMU | `IMUViewer` | Implemented | Quaternion-driven 3D B-logo robot, body/world XYZ axes, roll/pitch/yaw, rates, acceleration and freshness |
+| RGB-D reconstruction | `Viewer` + `WarpTSDFIntegration` + `WarpSurfaceExtraction` | Implemented | Persistent colored room surface, coverage and timing |
+| Cross-sensor fusion | `Viewer` + `WarpSensorFusion` | Implemented | LiDAR and colorized depth geometry, alignment residuals, synchronization and confidence |
+
+The IMU view is a sensor-state diagnostic and does not claim GPU acceleration;
+it lives in `blacknode-perception` so it remains available on systems with no
+CUDA device. Warp stages remain graph-visible where parallel sensor compute is
+materially useful.
 
 ## Delivery phases
 
@@ -61,32 +82,60 @@ Status: implemented in `WarpTrajectoryEvaluator`.
 
 ### 4. Live depth projection
 
+Status: implemented in `WarpDepthProjector`.
+
 - Prerequisite: a provider-neutral depth-frame contract that exposes metric
   depth and calibration to a managed GPU consumer without JSON-expanding every
   pixel. `blacknode-perception` remains the depth-camera capability owner.
 - Inputs: depth frames, camera intrinsics and calibrated sensor extrinsics.
 - Work: depth validation, deprojection, filtering, normals and confidence.
 - Visual: a live metric 3D point surface using the shared viewer controls.
-- Planned stage: `WarpDepthProjector`.
-- Planned template: `ROS2 Warp Depth Cloud`.
+- Stage: `WarpDepthProjector` connected to `Viewer.depth_projection`.
+- Template: `ROS2 Warp Depth Cloud`.
 
-### 5. RGB-D volumetric reconstruction
+### 5. Live IMU orientation
+
+Status: implemented in `IMUViewer` from `blacknode-perception`.
+
+- Inputs: a normalized `blacknode.imu-stream` or generic ROS 2
+  `sensor_msgs/msg/Imu` message stream.
+- Work: normalize and validate the quaternion, derive roll/pitch/yaw, preserve
+  angular velocity, linear acceleration, frame, message age and freshness.
+- Visual: a separate 3D B-logo robot with rotated body XYZ axes and a fixed
+  world frame; rotating the physical robot updates the model live.
+- Safety: messages that declare orientation unavailable and zero-length
+  quaternions are rejected; stale samples remain visible but are not labeled
+  live.
+- Templates: `IMU Orientation Lab` and `ROS 2 IMU Orientation Viewer`.
+
+### 6. RGB-D volumetric reconstruction
+
+Status: implemented in `WarpTSDFIntegration` and `WarpSurfaceExtraction`.
 
 - Inputs: projected depth, color and registered camera pose.
-- Work: sparse TSDF integration, occupancy/free-space evidence and surface
-  extraction.
+- Work: bounded device-resident TSDF integration with color evidence and
+  parallel confidence-weighted surface extraction.
 - Visual: a holographic room surface fills in while the camera moves.
-- Planned stages: `WarpTSDFIntegration` and `WarpSurfaceExtraction`.
-- Planned template: `ROS2 Warp RGB-D Reconstruction`.
+- Stages: `WarpTSDFIntegration` and `WarpSurfaceExtraction` connected to the
+  managed `Viewer`; volume state stays outside workflow JSON.
+- Templates: `Warp TSDF Reconstruction Lab` and `ROS2 Warp RGB-D Reconstruction`.
 
-### 6. LiDAR, depth and camera fusion
+### 7. LiDAR, depth and camera fusion
+
+Status: implemented in `WarpSensorFusion`.
 
 - Inputs: stable LiDAR, depth-camera and camera contracts plus calibrated
   extrinsics and synchronized timestamps.
-- Work: fused occupancy, LiDAR-to-image projection and batched calibration
-  hypothesis scoring.
-- Visual: colorized geometry, cross-sensor alignment residuals and confidence.
-- Planned template: `ROS2 Warp Sensor Fusion Lab`.
+- Work: pose-register LiDAR and metric depth, color depth with the aligned RGB
+  stream, query nearest LiDAR neighbors with a Warp `HashGrid`, and score a
+  bounded translation/yaw calibration lattice.
+- Visual: cyan LiDAR, RGB depth points blended from green alignment to red
+  residual, matched/unmatched counts, residual percentiles, confidence,
+  synchronization delta and selected calibration correction.
+- Safety and bounds: stale or unsynchronized pairs are rejected, point counts
+  and calibration hypotheses are capped, and the stage does not command robot
+  motion.
+- Templates: `Warp Sensor Fusion Lab` and `ROS2 Warp Sensor Fusion`.
 
 ## Benchmark contract
 

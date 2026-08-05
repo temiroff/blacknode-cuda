@@ -1,0 +1,96 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Warp TSDF Reconstruction Lab",
+  "saved_at": "2026-08-05T00:00:00",
+  "entrypoint": {"node_id": "viewer", "port": "scene"},
+  "metadata": {
+    "template": true,
+    "description": "Run a hardware-free metric depth camera through Warp projection, persistent bounded TSDF integration, surface extraction, and the shared 3D Viewer.",
+    "color": "#76b900",
+    "required_packages": ["blacknode-perception", "blacknode-cuda"],
+    "required_components": ["blacknode-perception/depth", "blacknode-cuda/spatial-processing"]
+  },
+  "node_meta": {
+    "test_provider": {
+      "id": "test_provider",
+      "type": "DepthCameraTestProvider",
+      "params": {"mode": "mock", "provider_id": "tsdf_depth_test", "hardware_id": "depth-camera-test-001", "frame_id": "front_depth_frame", "distance_m": 1.2, "samples_m": []},
+      "pos": [40, 120],
+      "inputs": ["mode", "provider_id", "hardware_id", "frame_id", "distance_m", "samples_m", "replay"],
+      "outputs": ["preview", "provider_state", "depth_stream", "point_cloud_stream", "health", "hardware", "report"],
+      "input_types": {"mode": "Text", "provider_id": "Text", "hardware_id": "Text", "frame_id": "Text", "distance_m": "Float", "samples_m": "List", "replay": "Dict"},
+      "output_types": {"preview": "Image", "provider_state": "Dict", "depth_stream": "Dict", "point_cloud_stream": "Dict", "health": "Dict", "hardware": "Dict", "report": "Text"},
+      "input_defaults": {"mode": "mock", "provider_id": "depth_test", "hardware_id": "depth-camera-test-001", "frame_id": "camera_depth", "distance_m": 1.2, "samples_m": []},
+      "input_choices": {"mode": ["mock", "replay"]}
+    },
+    "depth_camera": {
+      "id": "depth_camera",
+      "type": "DepthCamera",
+      "params": {"attachment_id": "front_depth_camera", "depth_topic": "/camera/depth/image_raw", "camera_info_topic": "/camera/depth/camera_info", "points_topic": "", "frame_id": "front_depth_frame", "stale_after_seconds": 2.0},
+      "pos": [400, 120],
+      "inputs": ["preview", "provider_state", "depth_stream", "point_cloud_stream", "health", "hardware", "attachment_id", "depth_topic", "camera_info_topic", "points_topic", "frame_id", "stale_after_seconds"],
+      "outputs": ["preview", "ready", "depth_camera", "depth_stream", "point_cloud_stream", "health", "hardware", "attachment_configuration", "report"],
+      "input_types": {"preview": "Image", "provider_state": "Dict", "depth_stream": "Dict", "point_cloud_stream": "Dict", "health": "Dict", "hardware": "Dict", "attachment_id": "Text", "depth_topic": "Text", "camera_info_topic": "Text", "points_topic": "Text", "frame_id": "Text", "stale_after_seconds": "Float"},
+      "output_types": {"preview": "Image", "ready": "Bool", "depth_camera": "Dict", "depth_stream": "Dict", "point_cloud_stream": "Dict", "health": "Dict", "hardware": "Dict", "attachment_configuration": "Dict", "report": "Text"},
+      "input_defaults": {"attachment_id": "front_depth_camera", "depth_topic": "/camera/depth/image_raw", "camera_info_topic": "/camera/depth/camera_info", "points_topic": "", "frame_id": "camera_depth", "stale_after_seconds": 2.0}
+    },
+    "projector": {
+      "id": "projector",
+      "type": "WarpDepthProjector",
+      "params": {"enabled": true, "minimum_depth_m": 0.1, "maximum_depth_m": 4.0, "downsample_stride": 1, "maximum_points": 50000, "stale_after_seconds": 2.0, "target_frame": "base_link", "sensor_x_m": 0.18, "sensor_y_m": 0.0, "sensor_z_m": 0.32, "sensor_roll_rad": 0.0, "sensor_pitch_rad": 0.0, "sensor_yaw_rad": 0.0, "compare_cpu": false},
+      "pos": [400, 480],
+      "inputs": ["enabled", "minimum_depth_m", "maximum_depth_m", "downsample_stride", "maximum_points", "stale_after_seconds", "target_frame", "sensor_x_m", "sensor_y_m", "sensor_z_m", "sensor_roll_rad", "sensor_pitch_rad", "sensor_yaw_rad", "compare_cpu"],
+      "outputs": ["stage", "enabled", "workload", "report"],
+      "input_types": {"enabled": "Bool", "minimum_depth_m": "Float", "maximum_depth_m": "Float", "downsample_stride": "Int", "maximum_points": "Int", "stale_after_seconds": "Float", "target_frame": "Text", "sensor_x_m": "Float", "sensor_y_m": "Float", "sensor_z_m": "Float", "sensor_roll_rad": "Float", "sensor_pitch_rad": "Float", "sensor_yaw_rad": "Float", "compare_cpu": "Bool"},
+      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
+      "input_defaults": {"enabled": true, "minimum_depth_m": 0.1, "maximum_depth_m": 8.0, "downsample_stride": 2, "maximum_points": 50000, "stale_after_seconds": 2.0, "target_frame": "base_link", "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_z_m": 0.0, "sensor_roll_rad": 0.0, "sensor_pitch_rad": 0.0, "sensor_yaw_rad": 0.0, "compare_cpu": false}
+    },
+    "tsdf": {
+      "id": "tsdf",
+      "type": "WarpTSDFIntegration",
+      "params": {"enabled": true, "require_pose": false, "voxel_size_m": 0.1, "truncation_m": 0.3, "volume_radius_m": 2.0, "volume_origin_x_m": 1.0, "volume_origin_y_m": 0.0, "volume_origin_z_m": 0.0, "maximum_voxels": 125000, "samples_per_ray": 7, "integrate_color": true},
+      "pos": [740, 450],
+      "inputs": ["enabled", "require_pose", "voxel_size_m", "truncation_m", "volume_radius_m", "volume_origin_x_m", "volume_origin_y_m", "volume_origin_z_m", "maximum_voxels", "samples_per_ray", "integrate_color"],
+      "outputs": ["stage", "enabled", "workload", "report"],
+      "input_types": {"enabled": "Bool", "require_pose": "Bool", "voxel_size_m": "Float", "truncation_m": "Float", "volume_radius_m": "Float", "volume_origin_x_m": "Float", "volume_origin_y_m": "Float", "volume_origin_z_m": "Float", "maximum_voxels": "Int", "samples_per_ray": "Int", "integrate_color": "Bool"},
+      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
+      "input_defaults": {"enabled": true, "require_pose": true, "voxel_size_m": 0.08, "truncation_m": 0.24, "volume_radius_m": 3.0, "volume_origin_x_m": 0.0, "volume_origin_y_m": 0.0, "volume_origin_z_m": -1.0, "maximum_voxels": 2000000, "samples_per_ray": 7, "integrate_color": true}
+    },
+    "surface": {
+      "id": "surface",
+      "type": "WarpSurfaceExtraction",
+      "params": {"enabled": true, "iso_level": 0.0, "surface_band": 0.25, "minimum_weight": 1.0, "maximum_points": 60000},
+      "pos": [740, 680],
+      "inputs": ["enabled", "iso_level", "surface_band", "minimum_weight", "maximum_points"],
+      "outputs": ["stage", "enabled", "workload", "report"],
+      "input_types": {"enabled": "Bool", "iso_level": "Float", "surface_band": "Float", "minimum_weight": "Float", "maximum_points": "Int"},
+      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
+      "input_defaults": {"enabled": true, "iso_level": 0.0, "surface_band": 0.2, "minimum_weight": 1.0, "maximum_points": 60000}
+    },
+    "viewer": {
+      "id": "viewer",
+      "type": "Viewer",
+      "params": {"action": "start", "pose_parent_frame": "odom", "pose_child_frame": "base_link", "viewer_id": "warp_tsdf_lab", "mode": "editor", "processor": "warp", "device": "cpu", "filter_min_m": 0.1, "filter_max_m": 4.0, "downsample_stride": 1, "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_yaw_rad": 0.0, "point_radius_m": 0.02, "fps": 30, "animate_scan": false, "show_rays": false, "accumulate_hits": true, "max_accumulated_points": 60000, "pulse_hz": 1.0, "pose_sync_tolerance_s": 0.25},
+      "pos": [1080, 100],
+      "inputs": ["action", "source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "pose_static", "pose_parent_frame", "pose_child_frame", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
+      "outputs": ["running", "live", "scene", "status", "viewer", "report"],
+      "input_types": {"action": "Text", "source": "Dict", "lidar_source": "Dict", "color_source": "Dict", "depth_projection": "Dict", "tsdf_integration": "Dict", "surface_extraction": "Dict", "sensor_fusion": "Dict", "pose": "Dict", "pose_static": "Dict", "pose_parent_frame": "Text", "pose_child_frame": "Text", "viewer_id": "Text", "mode": "Text", "processor": "Text", "device": "Text", "filter_min_m": "Float", "filter_max_m": "Float", "downsample_stride": "Int", "sensor_x_m": "Float", "sensor_y_m": "Float", "sensor_yaw_rad": "Float", "point_radius_m": "Float", "fps": "Int", "animate_scan": "Bool", "show_rays": "Bool", "accumulate_hits": "Bool", "max_accumulated_points": "Int", "pulse_hz": "Float", "pose_sync_tolerance_s": "Float"},
+      "output_types": {"running": "Bool", "live": "Bool", "scene": "Dict", "status": "Dict", "viewer": "Dict", "report": "Text"},
+      "input_defaults": {"action": "status", "pose_parent_frame": "odom", "pose_child_frame": "auto", "viewer_id": "viewer", "mode": "editor", "processor": "warp", "device": "cuda:0", "filter_min_m": 0.1, "filter_max_m": 12.0, "downsample_stride": 1, "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_yaw_rad": 0.0, "point_radius_m": 0.025, "fps": 30, "animate_scan": true, "show_rays": true, "accumulate_hits": true, "max_accumulated_points": 50000, "pulse_hz": 1.0, "pose_sync_tolerance_s": 0.25},
+      "input_choices": {"action": ["status", "start", "clear", "pause", "resume", "stop"], "mode": ["editor", "device"], "processor": ["warp"], "device": ["cuda:0", "cpu"]}
+    }
+  },
+  "edges": [
+    {"from": "test_provider", "from_port": "preview", "to": "depth_camera", "to_port": "preview"},
+    {"from": "test_provider", "from_port": "provider_state", "to": "depth_camera", "to_port": "provider_state"},
+    {"from": "test_provider", "from_port": "depth_stream", "to": "depth_camera", "to_port": "depth_stream"},
+    {"from": "test_provider", "from_port": "point_cloud_stream", "to": "depth_camera", "to_port": "point_cloud_stream"},
+    {"from": "test_provider", "from_port": "health", "to": "depth_camera", "to_port": "health"},
+    {"from": "test_provider", "from_port": "hardware", "to": "depth_camera", "to_port": "hardware"},
+    {"from": "depth_camera", "from_port": "depth_stream", "to": "viewer", "to_port": "source"},
+    {"from": "projector", "from_port": "stage", "to": "viewer", "to_port": "depth_projection"},
+    {"from": "tsdf", "from_port": "stage", "to": "viewer", "to_port": "tsdf_integration"},
+    {"from": "surface", "from_port": "stage", "to": "viewer", "to_port": "surface_extraction"}
+  ]
+}

@@ -170,11 +170,17 @@
         "pose_sync_tolerance_s": 0.25
       },
       "pos": [860, 80],
-      "inputs": ["action", "source", "pose", "pose_static", "pose_parent_frame", "pose_child_frame", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
+      "inputs": ["action", "source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "pose_static", "pose_parent_frame", "pose_child_frame", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
       "outputs": ["running", "live", "scene", "status", "viewer", "report"],
       "input_types": {
         "action": "Text",
         "source": "Dict",
+        "lidar_source": "Dict",
+        "color_source": "Dict",
+        "depth_projection": "Dict",
+        "tsdf_integration": "Dict",
+        "surface_extraction": "Dict",
+        "sensor_fusion": "Dict",
         "pose": "Dict",
         "pose_static": "Dict",
         "pose_parent_frame": "Text",
