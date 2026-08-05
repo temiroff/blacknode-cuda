@@ -404,6 +404,15 @@ def test_trajectory_stage_scores_live_occupancy_and_publishes_viewer_paths(monke
     assert len(started["scene"]["trajectory_safe"]) == 24
     assert started["scene"]["trajectory_goal"] == pytest.approx([2.0, 0.0, 0.0])
     assert "paths" not in evaluation
+    session = slam_runtime._SESSIONS["trajectory-evaluation"]
+    session["stop_event"].set()
+    evaluator_identity = id(session["trajectory_evaluator"])
+    updated = slam_runtime.set_trajectory_goal("trajectory-evaluation", -1.25, 0.75)
+    assert updated["scene"]["trajectory_goal"] == pytest.approx([-1.25, 0.75, 0.0])
+    assert session["trajectory_evaluation"]["goal_x_m"] == pytest.approx(-1.25)
+    assert session["trajectory_evaluation"]["goal_y_m"] == pytest.approx(0.75)
+    assert id(session["trajectory_evaluator"]) == evaluator_identity
+    assert "Trajectory goal set" in updated["report"]
     slam_runtime.stop_slam()
 
 

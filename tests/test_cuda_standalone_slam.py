@@ -68,6 +68,9 @@ def test_standalone_application_starts_ros_streams_and_warp_slam(monkeypatch):
     assert captured["source"]["topic"] == "/laser"
     assert captured["odometry_source"]["topic"] == "/wheel_odom"
     assert captured["options"]["stride"] == 1
+    assert captured["trajectory_evaluation"]["kind"] == "blacknode.warp-trajectory-evaluator"
+    assert captured["trajectory_evaluation"]["trajectory_count"] == 2_048
+    assert captured["trajectory_evaluation"]["commands_motion"] is False
     assert [item[1]["topic"] for item in calls if item[0] == "ros-start"] == [
         "/laser", "/wheel_odom",
     ]
@@ -80,12 +83,14 @@ def test_standalone_viewer_serves_state_static_assets_and_controls(tmp_path):
     class FakeApplication:
         def __init__(self):
             self.actions = []
+            self.payloads = []
 
         def snapshot(self):
             return {"running": True, "scene": {"sequence": 7}, "status": {"state": "ready"}}
 
-        def control(self, action):
+        def control(self, action, payload=None):
             self.actions.append(action)
+            self.payloads.append(payload or {})
             return {"running": action != "stop", "status": {"state": action}}
 
     application = FakeApplication()
@@ -99,6 +104,14 @@ def test_standalone_viewer_serves_state_static_assets_and_controls(tmp_path):
         request = urllib.request.Request(f"{url}/api/control/clear", method="POST")
         with urllib.request.urlopen(request, timeout=2) as response:
             controlled = json.loads(response.read())
+        goal_request = urllib.request.Request(
+            f"{url}/api/control/set-goal",
+            data=json.dumps({"goal_x_m": -1.25, "goal_y_m": 0.75}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(goal_request, timeout=2) as response:
+            goal = json.loads(response.read())
         with urllib.request.urlopen(f"{url}/", timeout=2) as response:
             html = response.read().decode("utf-8")
     finally:
@@ -108,5 +121,7 @@ def test_standalone_viewer_serves_state_static_assets_and_controls(tmp_path):
 
     assert state["scene"]["sequence"] == 7
     assert controlled["status"]["state"] == "clear"
-    assert application.actions == ["clear"]
+    assert goal["status"]["state"] == "set-goal"
+    assert application.actions == ["clear", "set-goal"]
+    assert application.payloads == [{}, {"goal_x_m": -1.25, "goal_y_m": 0.75}]
     assert "viewer" in html

@@ -5,6 +5,7 @@ import argparse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -100,6 +101,7 @@ class StandaloneSlamApplication:
                 "occupancy_radius_m": self.options.occupancy_radius,
                 "fps": self.options.fps,
             }
+            trajectory_count = max(64, min(65_536, int(self.options.trajectories)))
             started = slam_runtime.start_slam(
                 slam_id=self.slam_id,
                 node_id="standalone-slam",
@@ -108,6 +110,25 @@ class StandaloneSlamApplication:
                 mode="device" if self.options.native else "editor",
                 device=self.options.device,
                 options=slam_options(values),
+                trajectory_evaluation={
+                    "kind": "blacknode.warp-trajectory-evaluator",
+                    "schema_version": 1,
+                    "enabled": True,
+                    "goal_x_m": self.options.goal_x,
+                    "goal_y_m": self.options.goal_y,
+                    "trajectory_count": trajectory_count,
+                    "requested_trajectories": trajectory_count,
+                    "time_steps": 48,
+                    "horizon_s": 3.0,
+                    "maximum_linear_speed_mps": 0.7,
+                    "maximum_angular_speed_rps": 1.5,
+                    "robot_radius_m": 0.18,
+                    "clearance_margin_m": 0.18,
+                    "display_trajectories": min(96, trajectory_count),
+                    "compare_cpu": False,
+                    "comparison_limited": False,
+                    "commands_motion": False,
+                },
             )
             status = started.get("status") if isinstance(started.get("status"), dict) else {}
             self.last_error = str(status.get("error") or "") if status.get("state") == "error" else ""
@@ -142,8 +163,9 @@ class StandaloneSlamApplication:
             }
         return value
 
-    def control(self, action: str) -> dict[str, Any]:
+    def control(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         with self.lock:
+            payload = payload or {}
             if action == "start":
                 return self.start()
             if action == "clear":
@@ -155,6 +177,17 @@ class StandaloneSlamApplication:
             if action == "stop":
                 self.stop()
                 return self.snapshot()
+            if action == "set-goal":
+                try:
+                    goal_x_m = float(payload.get("goal_x_m"))
+                    goal_y_m = float(payload.get("goal_y_m"))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("SLAM goal coordinates must be finite numbers") from exc
+                if not math.isfinite(goal_x_m) or not math.isfinite(goal_y_m):
+                    raise ValueError("SLAM goal coordinates must be finite numbers")
+                self.options.goal_x = goal_x_m
+                self.options.goal_y = goal_y_m
+                return slam_runtime.set_trajectory_goal(self.slam_id, goal_x_m, goal_y_m)
             return {
                 "running": False,
                 "status": {"state": "error", "error": f"unsupported control action {action!r}"},
@@ -226,13 +259,31 @@ class SlamViewerHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         action = path[len(prefix):].strip().lower()
-        if action not in {"start", "clear", "pause", "resume", "stop"}:
+        if action not in {"start", "clear", "pause", "resume", "stop", "set-goal"}:
             self._json(
                 {"running": False, "status": {"state": "error", "error": "unsupported control action"}},
                 HTTPStatus.BAD_REQUEST,
             )
             return
-        self._json(self.server.application.control(action))
+        content_length = int(self.headers.get("Content-Length") or 0)
+        if content_length < 0 or content_length > 4096:
+            self._json(
+                {"running": False, "status": {"state": "error", "error": "control payload is too large"}},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        try:
+            payload = json.loads(self.rfile.read(content_length)) if content_length else {}
+            if not isinstance(payload, dict):
+                raise ValueError("control payload must be an object")
+            result = self.server.application.control(action, payload)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            self._json(
+                {"running": False, "status": {"state": "error", "error": str(exc)}},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        self._json(result)
 
 
 def _open_viewer(url: str, *, fullscreen: bool) -> subprocess.Popen | None:
@@ -269,6 +320,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sensor-x", type=float, default=0.0)
     parser.add_argument("--sensor-y", type=float, default=0.0)
     parser.add_argument("--sensor-yaw", type=float, default=0.0)
+    parser.add_argument("--goal-x", type=float, default=3.0, help="initial map-frame trajectory goal X in metres")
+    parser.add_argument("--goal-y", type=float, default=0.0, help="initial map-frame trajectory goal Y in metres")
+    parser.add_argument("--trajectories", type=int, default=2_048, help="parallel candidate trajectories per scan")
     parser.add_argument("--fps", type=int, default=30)
     return parser
 
