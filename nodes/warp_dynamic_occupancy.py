@@ -29,6 +29,7 @@ if wp is not None:
         velocities: wp.array(dtype=wp.vec3),
         motion_scores: wp.array(dtype=wp.float32),
         dynamic_flags: wp.array(dtype=wp.int32),
+        matched_flags: wp.array(dtype=wp.int32),
     ):
         point_index = wp.tid()
         point = current[point_index]
@@ -46,7 +47,9 @@ if wp is not None:
         velocity = wp.vec3(0.0, 0.0, 0.0)
         score = wp.float32(0.0)
         moving = wp.int32(0)
+        matched = wp.int32(0)
         if nearest_index >= 0:
+            matched = wp.int32(1)
             delta = point - previous[nearest_index]
             distance = wp.sqrt(nearest_distance_sq)
             velocity = delta * inverse_dt
@@ -60,12 +63,19 @@ if wp is not None:
                 1.0,
             )
             score = residual_score * wp.float32(0.65) + speed_score * wp.float32(0.35)
-            if distance > stable_radius and speed >= minimum_speed:
+            motion_distance = wp.max(wp.float32(0.01), stable_radius * wp.float32(0.35))
+            if distance > stable_radius or (distance > motion_distance and speed >= minimum_speed):
                 moving = wp.int32(1)
+        else:
+            # A return with no spatial predecessor is new or newly revealed.
+            # Keep it out of the persistent map until a later scan confirms it.
+            score = wp.float32(0.8)
+            moving = wp.int32(1)
 
         velocities[point_index] = velocity
         motion_scores[point_index] = score
         dynamic_flags[point_index] = moving
+        matched_flags[point_index] = matched
 
 
 def classify_motion_cpu(
@@ -111,9 +121,18 @@ def classify_motion_cpu(
         stop = start + len(batch)
         velocities[start:stop] = np.where(matched[:, None], batch_velocity, 0.0)
         scores[start:stop] = np.where(matched, residual_score * 0.65 + speed_score * 0.35, 0.0)
+        motion_distance = max(0.01, float(stable_radius_m) * 0.35)
         flags[start:stop] = (
-            matched & (distance > stable_radius_m) & (speed >= minimum_speed_mps)
+            (~matched)
+            | (
+                matched
+                & (
+                    (distance > stable_radius_m)
+                    | ((distance > motion_distance) & (speed >= minimum_speed_mps))
+                )
+            )
         ).astype(np.int32)
+        scores[start:stop] = np.where(matched, scores[start:stop], 0.8)
     return velocities, scores, flags
 
 
@@ -154,19 +173,23 @@ class WarpDynamicOccupancyTracker:
         values = np.ascontiguousarray(values[:self.maximum_points, :3])
         previous = self.previous_points
         previous_time_ns = self.previous_time_ns
-        self.previous_points = values.copy()
-        self.previous_time_ns = int(time_ns)
         self.revision += 1
         if previous is None or len(previous) == 0 or int(time_ns) <= previous_time_ns:
+            self.previous_points = values.copy()
+            self.previous_time_ns = int(time_ns)
             return self._waiting("warming", point_count=len(values))
 
         dt_s = (int(time_ns) - previous_time_ns) / 1_000_000_000.0
         if dt_s <= 0.0 or dt_s > max(0.05, float(maximum_age_s)):
+            self.previous_points = values.copy()
+            self.previous_time_ns = int(time_ns)
             return self._waiting("warming", point_count=len(values), dt_s=dt_s)
 
         stable_radius = max(0.01, float(stable_radius_m))
         tracking_radius = max(stable_radius + 0.01, float(tracking_radius_m))
         minimum_speed = max(0.0, float(minimum_speed_mps))
+        reference_values = values
+        reference_interval_s = max(0.12, min(0.4, float(maximum_age_s) * 0.75))
         comparison_limited = bool(compare_cpu and (len(previous) > 1_024 or len(values) > 1_024))
         if compare_cpu:
             previous = np.ascontiguousarray(previous[:1_024])
@@ -178,6 +201,7 @@ class WarpDynamicOccupancyTracker:
         velocities_wp = wp.zeros(len(values), dtype=wp.vec3, device=self.device)
         scores_wp = wp.zeros(len(values), dtype=wp.float32, device=self.device)
         flags_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
+        matched_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
         started = time.perf_counter()
         grid.build(previous_wp, tracking_radius)
         wp.launch(
@@ -194,6 +218,7 @@ class WarpDynamicOccupancyTracker:
                 velocities_wp,
                 scores_wp,
                 flags_wp,
+                matched_wp,
             ],
             device=self.device,
         )
@@ -201,7 +226,12 @@ class WarpDynamicOccupancyTracker:
         velocities = velocities_wp.numpy()
         scores = scores_wp.numpy()
         flags = flags_wp.numpy().astype(bool, copy=False)
+        matched = matched_wp.numpy().astype(bool, copy=False)
         pipeline_ms = (time.perf_counter() - started) * 1000.0
+
+        if dt_s >= reference_interval_s:
+            self.previous_points = reference_values.copy()
+            self.previous_time_ns = int(time_ns)
 
         cpu_ms = 0.0
         maximum_error = 0.0
@@ -223,6 +253,7 @@ class WarpDynamicOccupancyTracker:
             )
 
         dynamic_indices = np.flatnonzero(flags)
+        static_flags = matched & ~flags
         display_capacity = max(16, min(4_000, int(display_points)))
         if len(dynamic_indices) > display_capacity:
             selection = np.linspace(0, len(dynamic_indices) - 1, display_capacity, dtype=np.int32)
@@ -244,13 +275,16 @@ class WarpDynamicOccupancyTracker:
             "max_error": float(maximum_error),
             "comparison_limited": comparison_limited,
             "dt_s": float(dt_s),
+            "reference_interval_s": float(reference_interval_s),
             "stable_radius_m": stable_radius,
             "tracking_radius_m": tracking_radius,
             "minimum_speed_mps": minimum_speed,
             "mean_speed_mps": float(np.mean(speed)) if len(speed) else 0.0,
             "max_speed_mps": float(np.max(speed)) if len(speed) else 0.0,
+            "trail_distance_limit_m": float(min(0.3, max(stable_radius * 2.0, tracking_radius * 0.65))),
             "revision": int(self.revision),
             "_dynamic_mask": flags,
+            "_static_mask": static_flags,
             "points": values[display_indices].astype(float).tolist(),
             "velocities": velocities[display_indices].astype(float).tolist(),
             "scores": scores[display_indices].astype(float).tolist(),
@@ -281,6 +315,7 @@ class WarpDynamicOccupancyTracker:
             "max_speed_mps": 0.0,
             "revision": int(self.revision),
             "_dynamic_mask": np.zeros(point_count, dtype=bool),
+            "_static_mask": np.zeros(point_count, dtype=bool),
             "points": [],
             "velocities": [],
             "scores": [],

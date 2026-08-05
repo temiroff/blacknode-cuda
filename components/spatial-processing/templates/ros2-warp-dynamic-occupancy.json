@@ -69,10 +69,10 @@
       "type": "WarpDynamicOccupancy",
       "params": {
         "enabled": true,
-        "stable_radius_m": 0.08,
-        "tracking_radius_m": 0.45,
-        "minimum_speed_mps": 0.12,
-        "maximum_age_s": 0.5,
+        "stable_radius_m": 0.04,
+        "tracking_radius_m": 0.35,
+        "minimum_speed_mps": 0.04,
+        "maximum_age_s": 0.6,
         "maximum_points": 65536,
         "display_points": 1500,
         "trail_seconds": 0.35,
@@ -83,7 +83,7 @@
       "outputs": ["stage", "enabled", "workload", "report"],
       "input_types": {"enabled": "Bool", "stable_radius_m": "Float", "tracking_radius_m": "Float", "minimum_speed_mps": "Float", "maximum_age_s": "Float", "maximum_points": "Int", "display_points": "Int", "trail_seconds": "Float", "compare_cpu": "Bool"},
       "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
-      "input_defaults": {"enabled": true, "stable_radius_m": 0.08, "tracking_radius_m": 0.45, "minimum_speed_mps": 0.12, "maximum_age_s": 0.5, "maximum_points": 65536, "display_points": 1500, "trail_seconds": 0.35, "compare_cpu": false}
+      "input_defaults": {"enabled": true, "stable_radius_m": 0.04, "tracking_radius_m": 0.35, "minimum_speed_mps": 0.04, "maximum_age_s": 0.6, "maximum_points": 65536, "display_points": 1500, "trail_seconds": 0.35, "compare_cpu": false}
     },
     "slam": {
       "id": "slam",

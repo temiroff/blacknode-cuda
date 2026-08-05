@@ -356,8 +356,10 @@ def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypat
     assert len(started["scene"]["dynamic_points"]) == 1
     assert len(started["scene"]["dynamic_velocities"]) == 1
     assert "_dynamic_mask" not in dynamic
+    assert "_static_mask" not in dynamic
     assert started["scene"]["dynamic_points"][0][0] == pytest.approx(4.2)
-    assert started["scene"]["occupancy"]["rays"] == 9
+    assert len(started["scene"]["current_points"]) == 9
+    assert started["scene"]["occupancy"]["rays"] == 10
     slam_runtime.stop_slam()
 
 
