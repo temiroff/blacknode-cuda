@@ -90,7 +90,10 @@ evidence. Free rays reduce bounded occupancy evidence so removed objects clear
 from the map. A Warp coherence pass rejects isolated edge flicker, and only
 confirmed-static returns can influence scan matching so a moving foreground
 object cannot drag the fixed walls. The viewer marks coherent motion with
-orange points only. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
+orange points only. The Warp classifier also checks the persistent occupied
+grid before temporal matching, so wall returns revealed after an occluder moves
+are restored directly as static background instead of flashing as motion. Open
+**ROS2 Warp Dynamic Occupancy** for the complete wiring.
 
 `WarpTrajectoryEvaluator` is a graph-visible, visualization-only planning stage
 for `SLAM`. Connect its `stage` output to `SLAM.trajectory_evaluation`; the
