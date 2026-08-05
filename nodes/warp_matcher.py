@@ -97,6 +97,7 @@ class WarpCorrelativeMatcher:
                 occupied[y[valid] * self.grid_width + x[valid]] = 1
         self.occupied = wp.array(occupied, dtype=wp.uint8, device=self.device)
         self.last_kernel_ms = 0.0
+        self.last_particle_pipeline_ms = 0.0
 
     @staticmethod
     def _candidates(center: Any, linear_step: float, angular_step: float, radius: int) -> Any:
@@ -175,3 +176,15 @@ class WarpCorrelativeMatcher:
         local = np.asarray(local_points, dtype=np.float32)
         local = local[::max(1, math.ceil(len(local) / 1440))]
         return float(self._score(local, np.asarray([pose], dtype=np.float32))[0])
+
+    def score_candidates(self, local_points: Any, candidates: Any) -> Any:
+        """Score an explicit pose population and report synchronized pipeline time."""
+        local = np.asarray(local_points, dtype=np.float32)
+        local = local[::max(1, math.ceil(len(local) / 1440))]
+        candidate_values = np.asarray(candidates, dtype=np.float32)
+        if candidate_values.ndim != 2 or candidate_values.shape[1] < 3:
+            raise ValueError("Warp particle scoring requires Nx3 pose candidates")
+        started = time.perf_counter()
+        scores = self._score(local, candidate_values)
+        self.last_particle_pipeline_ms = (time.perf_counter() - started) * 1000.0
+        return scores

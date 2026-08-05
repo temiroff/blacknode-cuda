@@ -63,6 +63,29 @@ def test_correlative_match_recovers_metric_pose_near_prior():
     assert score > 0.8
 
 
+def test_particle_cpu_reference_scores_equal_work_pose_candidates():
+    local = _points()
+    reference = slam_runtime._transform_points(
+        local,
+        np.asarray([0.25, -0.1, math.radians(4.0)]),
+    )
+    candidates = np.asarray([
+        [0.25, -0.1, math.radians(4.0)],
+        [0.8, 0.6, math.radians(30.0)],
+    ], dtype=np.float32)
+
+    scores = slam_runtime.score_particle_candidates_cpu(
+        local,
+        reference,
+        candidates,
+        0.05,
+    )
+
+    assert scores.shape == (2,)
+    assert scores[0] > 0.9
+    assert scores[0] > scores[1]
+
+
 def test_deskew_registers_beams_into_first_beam_frame():
     points = np.asarray([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
 
@@ -226,6 +249,7 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_package == "blacknode-cuda"
     assert fn._bn_input_types["source"] == "Dict"
     assert fn._bn_input_types["odometry"] == "Dict"
+    assert fn._bn_input_types["particle_localization"] == "Dict"
     assert fn._bn_input_types["robot_length_m"] == "Float"
     assert fn._bn_input_types["robot_width_m"] == "Float"
     assert fn._bn_input_defaults["downsample_stride"] == 1
@@ -236,6 +260,65 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_output_types["pose"] == "Dict"
     assert fn._bn_output_types["map"] == "Dict"
     assert fn._bn_live_capable is True
+
+
+def test_particle_stage_is_explicit_and_slam_executes_it(monkeypatch):
+    slam_runtime.stop_slam()
+    local = _points()
+
+    stage_result = _NODE_REGISTRY["WarpParticleLocalization"]({
+        "enabled": True,
+        "particles": 96,
+        "position_spread_m": 0.4,
+        "yaw_spread_deg": 8.0,
+        "display_particles": 64,
+        "random_seed": 11,
+    })
+
+    monkeypatch.setattr(
+        warp_points,
+        "process_laser_scan",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "filtered_points": local.astype(float).tolist(),
+            "kernel_ms": 0.2,
+        },
+    )
+
+    started = _NODE_REGISTRY["SLAM"]({
+        "action": "start",
+        "source": _source(),
+        "particle_localization": stage_result["stage"],
+        "slam_id": "particle-localization",
+        "mode": "editor",
+        "device": "cpu",
+        "__node_id__": "particle-slam-node",
+        "__message_stream_reader__": lambda _source_value: {
+            "message": _message(1),
+            "messages": [_message(1)],
+            "received": 1,
+            "status": {
+                "state": "ready",
+                "source_fresh": True,
+                "last_message_time_ns": 1_000_000_000,
+            },
+        },
+    })
+
+    localization = started["scene"]["localization"]
+    assert stage_result["stage"]["kind"] == "blacknode.warp-particle-localization"
+    assert stage_result["workload"] == "96 pose hypotheses per fresh scan"
+    assert localization["state"] == "ready"
+    assert localization["backend"] == "numpy"
+    assert localization["requested_particles"] == 96
+    assert localization["evaluated_particles"] == 96
+    assert localization["beam_count"] == len(local)
+    assert localization["work_items"] == 96 * len(local)
+    assert 1.0 <= localization["effective_sample_size"] <= 96.0
+    assert len(started["scene"]["particles"]) == 64
+    assert len(started["scene"]["particle_scores"]) == 64
+    assert started["scene"]["particles"] != started["scene"]["current_points"]
+    slam_runtime.stop_slam()
 
 
 def test_slam_displays_sparse_live_scan_before_it_can_localize(monkeypatch):

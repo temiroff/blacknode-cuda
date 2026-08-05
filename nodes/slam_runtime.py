@@ -211,6 +211,41 @@ def _cached_warp_matcher(
     return matcher
 
 
+def _cached_particle_matcher(
+    session: dict[str, Any],
+    reference_points: Any,
+    resolution: float,
+    linear_window: float,
+) -> Any | None:
+    """Keep the visualization workload separate from the tracking matcher cache."""
+    device = str(session.get("device") or "")
+    if not warp_matcher.available(device):
+        return None
+    if (
+        session.get("particle_match_reference_points") is reference_points
+        and float(session.get("particle_match_resolution") or 0.0) == float(resolution)
+        and float(session.get("particle_match_linear_window") or 0.0)
+        == float(linear_window)
+    ):
+        return session.get("particle_matcher")
+    try:
+        matcher = warp_matcher.WarpCorrelativeMatcher(
+            reference_points,
+            resolution=resolution,
+            linear_window=linear_window,
+            device=device,
+        )
+    except Exception as exc:
+        session["particle_match_error"] = f"{type(exc).__name__}: {exc}"
+        return None
+    session["particle_match_reference_points"] = reference_points
+    session["particle_match_resolution"] = float(resolution)
+    session["particle_match_linear_window"] = float(linear_window)
+    session["particle_matcher"] = matcher
+    session["particle_match_error"] = ""
+    return matcher
+
+
 def correlative_match(
     local_points: Any,
     reference_points: Any,
@@ -279,6 +314,183 @@ def correlative_match(
         2,
     )
     return best, float(best_score)
+
+
+def score_particle_candidates_cpu(
+    local_points: Any,
+    reference_points: Any,
+    candidates: Any,
+    resolution: float,
+) -> Any:
+    """Reference scorer used for CPU mode and opt-in correctness comparisons."""
+    local = np.asarray(local_points, dtype=np.float32)
+    local = local[::max(1, math.ceil(len(local) / 1440))]
+    occupied = _expanded_cells(reference_points, resolution)
+    values = np.asarray(candidates, dtype=np.float32)
+    return np.asarray(
+        [_match_score(local, occupied, candidate, resolution) for candidate in values],
+        dtype=np.float32,
+    )
+
+
+def _evaluate_particle_localization(
+    session: dict[str, Any],
+    local_points: Any,
+    pose: Any,
+    _scan_time_ns: int,
+) -> None:
+    stage = session.get("particle_localization")
+    if not isinstance(stage, dict) or not bool(stage.get("enabled")):
+        session["particle_result"] = {}
+        return
+    reference = session.get("map_points")
+    if reference is None or len(reference) < 8:
+        session["particle_result"] = {
+            "state": "waiting",
+            "backend": "waiting",
+            "requested_particles": int(stage.get("particle_count") or 0),
+            "evaluated_particles": 0,
+            "display_particles": 0,
+            "beam_count": int(len(local_points)),
+            "work_items": 0,
+            "pipeline_ms": 0.0,
+            "cpu_ms": 0.0,
+            "speedup": 0.0,
+            "limited": False,
+        }
+        return
+
+    requested = max(64, min(65_536, int(stage.get("particle_count") or 16_384)))
+    resolution = float(session["options"]["map_resolution_m"])
+    linear_window = max(
+        float(session["options"]["match_linear_window_m"]),
+        float(stage.get("position_spread_m") or 0.8),
+    )
+    matcher = _cached_particle_matcher(
+        session,
+        reference,
+        resolution,
+        linear_window,
+    )
+    backend = "warp" if matcher is not None else "numpy"
+    evaluated = requested if matcher is not None else min(requested, 2_048)
+    # Keep the sampling pattern fixed so a stationary robot produces a stable
+    # confidence cloud; the cloud moves only with its pose center or evidence.
+    seed = int(stage.get("random_seed") or 7)
+    generator = np.random.default_rng(seed)
+    center = np.asarray(pose, dtype=np.float32)
+    spread = max(0.02, float(stage.get("position_spread_m") or 0.8))
+    yaw_spread = max(math.radians(0.5), float(stage.get("yaw_spread_rad") or math.radians(18.0)))
+    candidates = np.empty((evaluated, 3), dtype=np.float32)
+    candidates[:, 0] = center[0] + generator.uniform(-spread, spread, evaluated)
+    candidates[:, 1] = center[1] + generator.uniform(-spread, spread, evaluated)
+    candidates[:, 2] = center[2] + generator.uniform(-yaw_spread, yaw_spread, evaluated)
+    candidates[:, 2] = np.arctan2(np.sin(candidates[:, 2]), np.cos(candidates[:, 2]))
+    candidates[0] = center
+
+    cpu_ms = 0.0
+    if matcher is not None:
+        scores = matcher.score_candidates(local_points, candidates)
+        pipeline_ms = float(matcher.last_particle_pipeline_ms)
+        if bool(stage.get("compare_cpu")):
+            cpu_started = time.perf_counter()
+            cpu_scores = score_particle_candidates_cpu(
+                local_points,
+                reference,
+                candidates,
+                resolution,
+            )
+            cpu_ms = (time.perf_counter() - cpu_started) * 1000.0
+            maximum_error = float(np.max(np.abs(scores - cpu_scores)))
+        else:
+            maximum_error = 0.0
+    else:
+        cpu_started = time.perf_counter()
+        scores = score_particle_candidates_cpu(
+            local_points,
+            reference,
+            candidates,
+            resolution,
+        )
+        pipeline_ms = (time.perf_counter() - cpu_started) * 1000.0
+        cpu_ms = pipeline_ms
+        maximum_error = 0.0
+
+    scores = np.asarray(scores, dtype=np.float32)
+    best_index = int(np.argmax(scores))
+    score_min = float(np.min(scores))
+    score_max = float(np.max(scores))
+    score_range = max(1.0e-6, score_max - score_min)
+    normalized = (scores - score_min) / score_range
+    logits = (scores.astype(np.float64) - score_max) * 18.0
+    weights = np.exp(np.clip(logits, -40.0, 0.0))
+    weights /= max(1.0e-12, float(np.sum(weights)))
+    effective_sample_size = float(1.0 / max(1.0e-12, float(np.sum(weights ** 2))))
+    mean_x = float(np.sum(candidates[:, 0] * weights))
+    mean_y = float(np.sum(candidates[:, 1] * weights))
+    mean_sine = float(np.sum(np.sin(candidates[:, 2]) * weights))
+    mean_cosine = float(np.sum(np.cos(candidates[:, 2]) * weights))
+    mean_yaw = math.atan2(mean_sine, mean_cosine)
+    uncertainty_x = math.sqrt(max(0.0, float(np.sum((candidates[:, 0] - mean_x) ** 2 * weights))))
+    uncertainty_y = math.sqrt(max(0.0, float(np.sum((candidates[:, 1] - mean_y) ** 2 * weights))))
+    yaw_delta = np.arctan2(
+        np.sin(candidates[:, 2] - mean_yaw),
+        np.cos(candidates[:, 2] - mean_yaw),
+    )
+    uncertainty_yaw = math.sqrt(max(0.0, float(np.sum(yaw_delta ** 2 * weights))))
+
+    display_count = max(
+        32,
+        min(evaluated, 4_000, int(stage.get("display_particles") or 1_500)),
+    )
+    if display_count < evaluated:
+        uniform_count = max(1, display_count // 3)
+        weighted_count = display_count - uniform_count
+        uniform_indices = np.linspace(
+            0,
+            evaluated - 1,
+            uniform_count,
+            dtype=np.int32,
+        )
+        weighted_indices = generator.choice(
+            evaluated,
+            size=weighted_count,
+            replace=True,
+            p=weights,
+        ).astype(np.int32)
+        display_indices = np.concatenate([uniform_indices, weighted_indices])
+        display_indices[0] = best_index
+    else:
+        display_indices = np.arange(evaluated, dtype=np.int32)
+    displayed = candidates[display_indices]
+    session["particle_result"] = {
+        "state": "ready",
+        "backend": backend,
+        "requested_particles": requested,
+        "evaluated_particles": evaluated,
+        "display_particles": len(displayed),
+        "beam_count": int(min(len(local_points), 1_440)),
+        "work_items": int(evaluated * min(len(local_points), 1_440)),
+        "pipeline_ms": float(pipeline_ms),
+        "cpu_ms": float(cpu_ms),
+        "speedup": float(cpu_ms / pipeline_ms) if cpu_ms > 0.0 and pipeline_ms > 0.0 else 0.0,
+        "max_score_error": maximum_error,
+        "limited": evaluated != requested,
+        "best_score": score_max,
+        "effective_sample_size": effective_sample_size,
+        "best_pose": candidates[best_index].astype(float).tolist(),
+        "mean_pose": [mean_x, mean_y, mean_yaw],
+        "uncertainty": {
+            "x_m": uncertainty_x,
+            "y_m": uncertainty_y,
+            "yaw_rad": uncertainty_yaw,
+        },
+        "particles": np.column_stack(
+            [displayed[:, 0], displayed[:, 1], np.zeros(len(displayed), dtype=np.float32)]
+        ).astype(float).tolist(),
+        "particle_yaws": displayed[:, 2].astype(float).tolist(),
+        "particle_scores": normalized[display_indices].astype(float).tolist(),
+    }
 
 
 def _edge_error(first: Any, second: Any, measurement: Any) -> Any:
@@ -562,6 +774,16 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
     }
     keyframes = session.get("keyframes") or []
     loop_edges = [edge for edge in session.get("edges") or [] if edge.get("type") == "loop"]
+    particle_result = (
+        session.get("particle_result")
+        if isinstance(session.get("particle_result"), dict)
+        else {}
+    )
+    particle_summary = {
+        key: value
+        for key, value in particle_result.items()
+        if key not in {"particles", "particle_yaws", "particle_scores"}
+    }
     return {
         "kind": "blacknode.viewer-scene",
         "schema_version": 1,
@@ -577,6 +799,9 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "floor_colors": [],
         "occupied_points": [],
         "occupied_colors": [],
+        "particles": particle_result.get("particles") or [],
+        "particle_yaws": particle_result.get("particle_yaws") or [],
+        "particle_scores": particle_result.get("particle_scores") or [],
         "point_count": len(map_points),
         "current_point_count": len(current_world),
         "accumulated_scan_count": len(keyframes),
@@ -645,6 +870,7 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
             "map_resolution_m": float(session["options"]["map_resolution_m"]),
             "map_limited": bool(session.get("map_limited")),
         },
+        "localization": particle_summary,
         "animation": {
             "enabled": bool(session["options"].get("animate_scan", True)),
             "show_rays": bool(session["options"].get("show_rays", True)),
@@ -1000,6 +1226,7 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         # localization. Keep one hidden registered scan so the robot can move
         # through a fixed frame after Clear while the visible map stays empty.
         session["tracking_reference_points"] = _transform_points(local_points, pose)
+    _evaluate_particle_localization(session, local_points, pose, scan_time_ns)
     scene = _scene(session, scan, local_points, float(processed.get("kernel_ms") or 0.0))
     session.update(
         live=True,
@@ -1126,6 +1353,7 @@ def start_slam(
     mode: str,
     device: str,
     options: dict[str, Any],
+    particle_localization: dict[str, Any] | None = None,
     source_reader: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
@@ -1158,6 +1386,8 @@ def start_slam(
         "mode": selected_mode,
         "device": str(device or "cuda:0"),
         "options": dict(options),
+        "particle_localization": dict(particle_localization or {}),
+        "particle_result": {},
         "running": True,
         "live": False,
         "mapping_paused": False,
@@ -1174,6 +1404,11 @@ def start_slam(
         "warp_match_linear_window": 0.0,
         "warp_matcher": None,
         "warp_match_error": "",
+        "particle_match_reference_points": None,
+        "particle_match_resolution": 0.0,
+        "particle_match_linear_window": 0.0,
+        "particle_matcher": None,
+        "particle_match_error": "",
         "matching_backend": "warp" if warp_matcher.available(str(device or "cuda:0")) else "numpy",
         "matching_kernel_ms": 0.0,
         "pose": np.zeros(3, dtype=np.float64),
@@ -1249,6 +1484,9 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             floor_colors=[],
             occupied_points=[],
             occupied_colors=[],
+            particles=[],
+            particle_yaws=[],
+            particle_scores=[],
             point_count=0,
             floor_point_count=0,
             floor_display_count=0,
@@ -1259,6 +1497,18 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             display_stride=1,
             trajectory=[],
             loop_closures=[],
+            localization={
+                "state": "waiting",
+                "backend": "waiting",
+                "requested_particles": int(
+                    (session.get("particle_localization") or {}).get("particle_count")
+                    or 0
+                ),
+                "evaluated_particles": 0,
+                "display_particles": 0,
+                "work_items": 0,
+                "pipeline_ms": 0.0,
+            },
             history_paused=True,
         )
         scene_slam = dict(scene.get("slam") or {})
@@ -1283,6 +1533,7 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             tracking_reference_points=tracking_reference,
             prior_match_score=0.0, scan_motion_override=False,
             tracking_correction_limited=False,
+            particle_result={},
             loop_closures=0, last_loop_score=0.0, map_limited=False,
             scene=scene, native={},
             report="SLAM map cleared; mapping is off",

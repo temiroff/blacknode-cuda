@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-cuda"
-version = "0.4.4"
+version = "0.4.5"
 description = "GPU capability checks, image processing, tensor operations, and optional benchmarks."
 requires-blacknode = ">=0.1.0"
 layer = "compute"
@@ -54,7 +54,8 @@ default = true
 capabilities = ["compute.warp.spatial"]
 templates = ["components/spatial-processing/templates"]
 node-types = [
-  "Viewer", "SLAM", "WarpLaserScanFilter", "WarpLiDARViewer", "WarpSLAMDiscoveryViewer"
+  "Viewer", "SLAM", "WarpParticleLocalization", "WarpLaserScanFilter",
+  "WarpLiDARViewer", "WarpSLAMDiscoveryViewer"
 ]
 
 [components.benchmarks]
