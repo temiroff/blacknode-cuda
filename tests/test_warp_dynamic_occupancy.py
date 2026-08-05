@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("warp")
+import warp as wp
 
 from blacknode.pkg.blacknode_cuda.warp_dynamic_occupancy import (
     WarpDynamicOccupancyTracker,
@@ -102,6 +103,50 @@ def test_warp_hash_grid_keeps_spatially_coherent_motion_cluster():
     assert result["_motion_mask"].tolist() == [False, True, True, False]
     assert [point[0] for point in result["points"]] == pytest.approx([1.2, 1.2])
     assert [velocity[0] for velocity in result["velocities"]] == pytest.approx([2.0, 2.0], abs=1.0e-5)
+
+
+def test_revealed_known_wall_returns_restore_as_static_instead_of_reverse_motion():
+    tracker = WarpDynamicOccupancyTracker(device="cpu")
+    options = {
+        "stable_radius_m": 0.05,
+        "tracking_radius_m": 0.3,
+        "minimum_speed_mps": 0.1,
+        "maximum_age_s": 0.5,
+        "display_points": 32,
+    }
+    tracker.update(_motion_cluster(1.0), 1_000_000_000, **options)
+
+    resolution = 0.05
+    width = 64
+    height = 8
+    world_min_x = 0.0
+    world_min_y = -0.2
+    states = np.zeros(width * height, dtype=np.uint8)
+    revealed = _motion_cluster(1.2)
+    for point in revealed[1:3]:
+        column = int(np.floor((point[0] - world_min_x) / resolution))
+        row = int(np.floor((point[1] - world_min_y) / resolution))
+        states[row * width + column] = 2
+
+    result = tracker.update(
+        revealed,
+        1_100_000_000,
+        **options,
+        static_cell_states=wp.array(states, dtype=wp.uint8, device="cpu"),
+        static_grid_width=width,
+        static_grid_height=height,
+        static_world_min_x=world_min_x,
+        static_world_min_y=world_min_y,
+        static_resolution_m=resolution,
+    )
+
+    assert result["known_static_points"] == 2
+    assert result["dynamic_points"] == 0
+    assert result["motion_candidates"] == 0
+    assert result["_known_static_mask"].tolist() == [False, True, True, False]
+    assert result["_static_mask"].tolist() == [True, True, True, True]
+    assert result["_motion_mask"].tolist() == [False, False, False, False]
+    assert result["points"] == []
 
 
 def test_clear_discards_temporal_reference_without_reclassifying_old_points():

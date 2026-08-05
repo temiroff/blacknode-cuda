@@ -22,6 +22,12 @@ if wp is not None:
         grid: wp.uint64,
         previous: wp.array(dtype=wp.vec3),
         current: wp.array(dtype=wp.vec3),
+        static_cell_states: wp.array(dtype=wp.uint8),
+        static_grid_width: wp.int32,
+        static_grid_height: wp.int32,
+        static_world_min_x: wp.float32,
+        static_world_min_y: wp.float32,
+        static_resolution: wp.float32,
         stable_radius: wp.float32,
         tracking_radius: wp.float32,
         inverse_dt: wp.float32,
@@ -30,6 +36,7 @@ if wp is not None:
         motion_scores: wp.array(dtype=wp.float32),
         dynamic_flags: wp.array(dtype=wp.int32),
         matched_flags: wp.array(dtype=wp.int32),
+        known_static_flags: wp.array(dtype=wp.int32),
     ):
         point_index = wp.tid()
         point = current[point_index]
@@ -48,7 +55,32 @@ if wp is not None:
         score = wp.float32(0.0)
         moving = wp.int32(0)
         matched = wp.int32(0)
-        if nearest_index >= 0:
+        known_static = wp.int32(0)
+        if (
+            static_grid_width > 0
+            and static_grid_height > 0
+            and static_resolution > 0.0
+        ):
+            point_column = wp.int32(
+                wp.floor((point[0] - static_world_min_x) / static_resolution)
+            )
+            point_row = wp.int32(
+                wp.floor((point[1] - static_world_min_y) / static_resolution)
+            )
+            if (
+                point_column >= 0
+                and point_column < static_grid_width
+                and point_row >= 0
+                and point_row < static_grid_height
+            ):
+                cell = point_row * static_grid_width + point_column
+                if static_cell_states[cell] == wp.uint8(2):
+                    known_static = wp.int32(1)
+        if known_static != 0:
+            # A previously occupied map cell that becomes visible again is
+            # background revealed after an occluder moved, not reverse motion.
+            matched = wp.int32(1)
+        elif nearest_index >= 0:
             matched = wp.int32(1)
             delta = point - previous[nearest_index]
             distance = wp.sqrt(nearest_distance_sq)
@@ -76,6 +108,7 @@ if wp is not None:
         motion_scores[point_index] = score
         dynamic_flags[point_index] = moving
         matched_flags[point_index] = matched
+        known_static_flags[point_index] = known_static
 
 
     @wp.kernel
@@ -188,6 +221,7 @@ class WarpDynamicOccupancyTracker:
         self.previous_points: Any | None = None
         self.previous_time_ns = 0
         self.revision = 0
+        self._empty_static_cells = wp.zeros(1, dtype=wp.uint8, device=self.device)
 
     def clear(self) -> None:
         self.previous_points = None
@@ -205,6 +239,12 @@ class WarpDynamicOccupancyTracker:
         maximum_age_s: float,
         display_points: int,
         compare_cpu: bool = False,
+        static_cell_states: Any | None = None,
+        static_grid_width: int = 0,
+        static_grid_height: int = 0,
+        static_world_min_x: float = 0.0,
+        static_world_min_y: float = 0.0,
+        static_resolution_m: float = 0.0,
     ) -> dict[str, Any]:
         values = np.asarray(world_points, dtype=np.float32)
         if values.ndim != 2 or values.shape[1] < 3 or len(values) == 0:
@@ -241,7 +281,16 @@ class WarpDynamicOccupancyTracker:
         scores_wp = wp.zeros(len(values), dtype=wp.float32, device=self.device)
         flags_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
         matched_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
+        known_static_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
         coherent_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
+        static_width = max(0, int(static_grid_width))
+        static_height = max(0, int(static_grid_height))
+        static_resolution = max(0.0, float(static_resolution_m))
+        static_cells_wp = (
+            static_cell_states
+            if static_cell_states is not None
+            else self._empty_static_cells
+        )
         started = time.perf_counter()
         grid.build(previous_wp, tracking_radius)
         wp.launch(
@@ -251,6 +300,12 @@ class WarpDynamicOccupancyTracker:
                 grid.id,
                 previous_wp,
                 current_wp,
+                static_cells_wp,
+                static_width,
+                static_height,
+                float(static_world_min_x),
+                float(static_world_min_y),
+                static_resolution,
                 stable_radius,
                 tracking_radius,
                 1.0 / dt_s,
@@ -259,6 +314,7 @@ class WarpDynamicOccupancyTracker:
                 scores_wp,
                 flags_wp,
                 matched_wp,
+                known_static_wp,
             ],
             device=self.device,
         )
@@ -283,6 +339,7 @@ class WarpDynamicOccupancyTracker:
         scores = scores_wp.numpy()
         flags = flags_wp.numpy().astype(bool, copy=False)
         matched = matched_wp.numpy().astype(bool, copy=False)
+        known_static = known_static_wp.numpy().astype(bool, copy=False)
         coherent = coherent_wp.numpy().astype(bool, copy=False)
         pipeline_ms = (time.perf_counter() - started) * 1000.0
 
@@ -302,6 +359,9 @@ class WarpDynamicOccupancyTracker:
                 dt_s=dt_s,
                 minimum_speed_mps=minimum_speed,
             )
+            cpu_velocities[known_static] = 0.0
+            cpu_scores[known_static] = 0.0
+            cpu_flags[known_static] = 0
             cpu_ms = (time.perf_counter() - cpu_started) * 1000.0
             maximum_error = max(
                 float(np.max(np.abs(velocities - cpu_velocities))) if len(values) else 0.0,
@@ -310,7 +370,7 @@ class WarpDynamicOccupancyTracker:
             )
 
         dynamic_indices = np.flatnonzero(coherent)
-        static_flags = matched & ~flags
+        static_flags = known_static | (matched & ~flags)
         motion_candidates = matched & flags
         transient_flags = ~matched
         display_capacity = max(16, min(4_000, int(display_points)))
@@ -329,6 +389,7 @@ class WarpDynamicOccupancyTracker:
             "dynamic_points": int(len(dynamic_indices)),
             "motion_candidates": int(np.count_nonzero(motion_candidates)),
             "transient_points": int(np.count_nonzero(transient_flags)),
+            "known_static_points": int(np.count_nonzero(known_static)),
             "rejected_motion_points": int(np.count_nonzero(motion_candidates & ~coherent)),
             "display_points": int(len(display_indices)),
             "pipeline_ms": float(pipeline_ms),
@@ -349,6 +410,7 @@ class WarpDynamicOccupancyTracker:
             "_dynamic_mask": flags,
             "_static_mask": static_flags,
             "_motion_mask": coherent,
+            "_known_static_mask": known_static,
             "points": values[display_indices].astype(float).tolist(),
             "velocities": velocities[display_indices].astype(float).tolist(),
             "scores": scores[display_indices].astype(float).tolist(),
@@ -370,6 +432,7 @@ class WarpDynamicOccupancyTracker:
             "dynamic_points": 0,
             "motion_candidates": 0,
             "transient_points": 0,
+            "known_static_points": 0,
             "rejected_motion_points": 0,
             "display_points": 0,
             "pipeline_ms": 0.0,
@@ -384,6 +447,7 @@ class WarpDynamicOccupancyTracker:
             "_dynamic_mask": np.zeros(point_count, dtype=bool),
             "_static_mask": np.zeros(point_count, dtype=bool),
             "_motion_mask": np.zeros(point_count, dtype=bool),
+            "_known_static_mask": np.zeros(point_count, dtype=bool),
             "points": [],
             "velocities": [],
             "scores": [],

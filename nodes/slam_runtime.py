@@ -524,6 +524,7 @@ def _evaluate_dynamic_occupancy(
                 "scores": [],
             }
             return
+    occupancy_grid = session.get("occupancy_grid")
     session["dynamic_result"] = tracker.update(
         world_points,
         scan_time_ns,
@@ -533,6 +534,22 @@ def _evaluate_dynamic_occupancy(
         maximum_age_s=float(stage.get("maximum_age_s") or 0.6),
         display_points=int(stage.get("display_points") or 1_500),
         compare_cpu=bool(stage.get("compare_cpu")),
+        static_cell_states=(
+            getattr(occupancy_grid, "cell_states", None)
+            if occupancy_grid is not None
+            else None
+        ),
+        static_grid_width=int(getattr(occupancy_grid, "grid_width", 0) or 0),
+        static_grid_height=int(getattr(occupancy_grid, "grid_height", 0) or 0),
+        static_world_min_x=float(
+            getattr(occupancy_grid, "world_min_x", 0.0) or 0.0
+        ),
+        static_world_min_y=float(
+            getattr(occupancy_grid, "world_min_y", 0.0) or 0.0
+        ),
+        static_resolution_m=float(
+            getattr(occupancy_grid, "resolution_m", 0.0) or 0.0
+        ),
     )
 
 
@@ -932,7 +949,10 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
     dynamic_summary = {
         key: value
         for key, value in dynamic_result.items()
-        if key not in {"_dynamic_mask", "_static_mask", "_motion_mask", "points", "velocities", "scores"}
+        if key not in {
+            "_dynamic_mask", "_static_mask", "_motion_mask",
+            "_known_static_mask", "points", "velocities", "scores",
+        }
     }
     dynamic_summary["trail_seconds"] = float(
         (session.get("dynamic_occupancy") or {}).get("trail_seconds") or 0.35
