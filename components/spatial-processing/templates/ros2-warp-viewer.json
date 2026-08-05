@@ -9,12 +9,16 @@
   },
   "metadata": {
     "template": true,
-    "description": "Select a paired compute device, subscribe to scan and pose topics, register each fresh scan with the nearest pose, process it with Warp, and inspect the bounded map in the 3D-orbit Viewer. Set mode=device before deployment to open the native viewer on that device.",
+    "description": "Select a paired compute device, subscribe through generic ROS2 transport, normalize the scan, and read the pose topic, register each fresh scan with the nearest pose, process it with Warp, and inspect the bounded map in the 3D-orbit Viewer. Set mode=device before deployment to open the native viewer on that device.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
       "blacknode-ros2",
-      "blacknode-cuda"
+      "blacknode-cuda",
+      "blacknode-perception"
+    ],
+    "required_components": [
+      "blacknode-perception/lidar"
     ]
   },
   "node_meta": {
@@ -25,9 +29,22 @@
         "device_id": "",
         "device_name": ""
       },
-      "pos": [40, 180],
-      "inputs": ["device_id", "device_name", "inspection"],
-      "outputs": ["configured", "inspection_available", "device", "inspection", "report"],
+      "pos": [
+        40,
+        180
+      ],
+      "inputs": [
+        "device_id",
+        "device_name",
+        "inspection"
+      ],
+      "outputs": [
+        "configured",
+        "inspection_available",
+        "device",
+        "inspection",
+        "report"
+      ],
       "input_types": {
         "device_id": "Text",
         "device_name": "Text",
@@ -55,21 +72,52 @@
         "node_name": "blacknode_ros2_scan",
         "history": 10,
         "timeout": 10.0,
-        "stale_after_seconds": 1.0
+        "stale_after_seconds": 1.0,
+        "transport": "message",
+        "stream_options": {},
+        "qos": "sensor_data"
       },
-      "pos": [440, 120],
-      "inputs": ["trigger", "device", "action", "topic", "message_type", "node_name", "history", "timeout", "stale_after_seconds"],
-      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
+      "pos": [
+        440,
+        120
+      ],
+      "inputs": [
+        "trigger",
+        "device",
+        "action",
+        "topic",
+        "message_type",
+        "transport",
+        "stream_options",
+        "node_name",
+        "history",
+        "timeout",
+        "stale_after_seconds",
+        "qos"
+      ],
+      "outputs": [
+        "running",
+        "message",
+        "messages",
+        "stream",
+        "status",
+        "received",
+        "backend",
+        "report"
+      ],
       "input_types": {
         "trigger": "Any",
         "device": "Dict",
         "action": "Text",
         "topic": "Text",
         "message_type": "Text",
+        "transport": "Text",
+        "stream_options": "Dict",
         "node_name": "Text",
         "history": "Int",
         "timeout": "Float",
-        "stale_after_seconds": "Float"
+        "stale_after_seconds": "Float",
+        "qos": "Text"
       },
       "output_types": {
         "running": "Bool",
@@ -85,13 +133,31 @@
         "action": "status",
         "topic": "/scan",
         "message_type": "",
+        "transport": "auto",
+        "stream_options": {},
         "node_name": "blacknode_ros2_topic",
         "history": 10,
         "timeout": 10.0,
-        "stale_after_seconds": 2.0
+        "stale_after_seconds": 2.0,
+        "qos": "sensor_data"
       },
       "input_choices": {
-        "action": ["once", "start", "status", "stop"]
+        "action": [
+          "once",
+          "start",
+          "status",
+          "stop"
+        ],
+        "transport": [
+          "auto",
+          "message",
+          "image"
+        ],
+        "qos": [
+          "sensor_data",
+          "reliable",
+          "transient_local"
+        ]
       }
     },
     "pose": {
@@ -106,9 +172,31 @@
         "timeout": 10.0,
         "stale_after_seconds": 1.0
       },
-      "pos": [440, 400],
-      "inputs": ["trigger", "device", "action", "topic", "message_type", "node_name", "history", "timeout", "stale_after_seconds"],
-      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
+      "pos": [
+        440,
+        400
+      ],
+      "inputs": [
+        "trigger",
+        "device",
+        "action",
+        "topic",
+        "message_type",
+        "node_name",
+        "history",
+        "timeout",
+        "stale_after_seconds"
+      ],
+      "outputs": [
+        "running",
+        "message",
+        "messages",
+        "stream",
+        "status",
+        "received",
+        "backend",
+        "report"
+      ],
       "input_types": {
         "trigger": "Any",
         "device": "Dict",
@@ -140,7 +228,12 @@
         "stale_after_seconds": 2.0
       },
       "input_choices": {
-        "action": ["once", "start", "status", "stop"]
+        "action": [
+          "once",
+          "start",
+          "status",
+          "stop"
+        ]
       }
     },
     "viewer": {
@@ -169,9 +262,50 @@
         "pulse_hz": 1.0,
         "pose_sync_tolerance_s": 0.25
       },
-      "pos": [860, 80],
-      "inputs": ["action", "source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "pose_static", "pose_parent_frame", "pose_child_frame", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
-      "outputs": ["running", "live", "scene", "status", "viewer", "report"],
+      "pos": [
+        860,
+        80
+      ],
+      "inputs": [
+        "action",
+        "source",
+        "lidar_source",
+        "color_source",
+        "depth_projection",
+        "tsdf_integration",
+        "surface_extraction",
+        "sensor_fusion",
+        "pose",
+        "pose_static",
+        "pose_parent_frame",
+        "pose_child_frame",
+        "viewer_id",
+        "mode",
+        "processor",
+        "device",
+        "filter_min_m",
+        "filter_max_m",
+        "downsample_stride",
+        "sensor_x_m",
+        "sensor_y_m",
+        "sensor_yaw_rad",
+        "point_radius_m",
+        "fps",
+        "animate_scan",
+        "show_rays",
+        "accumulate_hits",
+        "max_accumulated_points",
+        "pulse_hz",
+        "pose_sync_tolerance_s"
+      ],
+      "outputs": [
+        "running",
+        "live",
+        "scene",
+        "status",
+        "viewer",
+        "report"
+      ],
       "input_types": {
         "action": "Text",
         "source": "Dict",
@@ -236,17 +370,86 @@
         "pose_sync_tolerance_s": 0.25
       },
       "input_choices": {
-        "action": ["status", "start", "clear", "pause", "resume", "stop"],
-        "mode": ["editor", "device"],
-        "processor": ["warp"],
-        "device": ["cuda:0", "cpu"]
+        "action": [
+          "status",
+          "start",
+          "clear",
+          "pause",
+          "resume",
+          "stop"
+        ],
+        "mode": [
+          "editor",
+          "device"
+        ],
+        "processor": [
+          "warp"
+        ],
+        "device": [
+          "cuda:0",
+          "cpu"
+        ]
       }
+    },
+    "ros2_processor": {
+      "id": "ros2_processor",
+      "type": "LaserScanProcessor",
+      "params": {},
+      "pos": [
+        740.0,
+        120.0
+      ],
+      "inputs": [
+        "source"
+      ],
+      "outputs": [
+        "stream",
+        "laser_scan",
+        "health",
+        "report"
+      ],
+      "input_types": {
+        "source": "Dict"
+      },
+      "output_types": {
+        "stream": "Dict",
+        "laser_scan": "Dict",
+        "health": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {}
     }
   },
   "edges": [
-    {"from": "device", "from_port": "device", "to": "ros2", "to_port": "device"},
-    {"from": "device", "from_port": "device", "to": "pose", "to_port": "device"},
-    {"from": "ros2", "from_port": "stream", "to": "viewer", "to_port": "source"},
-    {"from": "pose", "from_port": "stream", "to": "viewer", "to_port": "pose"}
+    {
+      "from": "device",
+      "from_port": "device",
+      "to": "ros2",
+      "to_port": "device"
+    },
+    {
+      "from": "device",
+      "from_port": "device",
+      "to": "pose",
+      "to_port": "device"
+    },
+    {
+      "from": "ros2_processor",
+      "from_port": "stream",
+      "to": "viewer",
+      "to_port": "source"
+    },
+    {
+      "from": "pose",
+      "from_port": "stream",
+      "to": "viewer",
+      "to_port": "pose"
+    },
+    {
+      "from": "ros2",
+      "from_port": "stream",
+      "to": "ros2_processor",
+      "to_port": "source"
+    }
   ]
 }

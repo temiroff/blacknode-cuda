@@ -319,14 +319,17 @@ def test_navigation_lab_wires_visible_warp_stages_into_managed_slam():
     assert template["kind"] == "blacknode.workflow"
     assert template["entrypoint"] == {"node_id": "slam", "port": "scene"}
     assert template["metadata"]["required_packages"] == [
-        "blacknode-robot", "blacknode-ros2", "blacknode-cuda",
+        "blacknode-robot", "blacknode-ros2", "blacknode-cuda", "blacknode-perception",
     ]
+    assert template["node_meta"]["scan_processor"]["type"] == "LaserScanProcessor"
     assert template["node_meta"]["trajectory_evaluation"]["type"] == "WarpTrajectoryEvaluator"
     assert template["node_meta"]["dynamic_occupancy"]["type"] == "WarpDynamicOccupancy"
     assert {
         (edge["from"], edge["from_port"], edge["to"], edge["to_port"])
         for edge in template["edges"]
     } >= {
+        ("scan", "stream", "scan_processor", "source"),
+        ("scan_processor", "stream", "slam", "source"),
         ("dynamic_occupancy", "stage", "slam", "dynamic_occupancy"),
         ("trajectory_evaluation", "stage", "slam", "trajectory_evaluation"),
     }

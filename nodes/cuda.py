@@ -1406,7 +1406,7 @@ def _img_error(message: str) -> dict:
 # an upstream MJPEG source's snapshot.jpg, filters each frame on the GPU, and
 # re-serves its own live MJPEG stream. This is the "video, not button
 # re-cooking" path: the graph is only touched once (to start the helper
-# process), not once per frame, mirroring CameraROS2Subscribe /
+# process), not once per frame, mirroring ROS2 image transport /
 # TrackingObject in packages/blacknode-ros2 and packages/blacknode-perception.
 # ---------------------------------------------------------------------------
 
@@ -1414,7 +1414,7 @@ def _img_error(message: str) -> dict:
     name="CUDAImageFilterStream", component="image-processing",
     live=True,
     category="NVIDIA CUDA",
-    description="Start or stop a live GPU-filtered MJPEG stream reading from an upstream snapshot URL (e.g. CameraROS2Subscribe's snapshot_url).",
+    description="Start or stop a live GPU-filtered MJPEG stream reading from CameraImageProcessor.snapshot_url.",
     inputs={
         "frame_stream": Dict(default={}),
         "trigger": AnyPort,

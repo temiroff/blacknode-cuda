@@ -12,106 +12,164 @@
     "description": "Stream provider-neutral metric depth through a compact binary frame handle, project calibrated pixels with Warp, estimate surface normals and confidence, and inspect the live 3D surface in the shared Viewer.",
     "color": "#76b900",
     "required_packages": [
+      "blacknode-robot",
       "blacknode-ros2",
       "blacknode-perception",
       "blacknode-cuda"
     ],
     "required_components": [
+      "blacknode-robot/capabilities",
       "blacknode-ros2/core",
       "blacknode-perception/depth",
-      "blacknode-cuda/spatial-processing"
-    ],
-    "required_adapters": [
-      "blacknode-perception/depth@ros2"
+      "blacknode-cuda/spatial-processing",
+      "blacknode-ros2/topics"
     ]
   },
   "node_meta": {
-    "depth_source": {
-      "id": "depth_source",
-      "type": "DepthROS2Subscribe",
+    "device": {
+      "id": "device",
+      "type": "ComputeDevice",
       "params": {
-        "action": "start",
-        "stream_id": "warp_depth_cloud",
-        "topic": "/camera/depth/image_raw",
-        "camera_info_topic": "/camera/depth/camera_info",
-        "points_topic": "",
-        "frame_id": "camera_depth",
-        "encoding": "auto",
-        "depth_scale": 0.001,
-        "fx": 525.0,
-        "fy": 525.0,
-        "cx": 319.5,
-        "cy": 239.5,
-        "host": "127.0.0.1",
-        "port": 0,
-        "max_fps": 15.0,
-        "max_width": 960,
-        "jpeg_quality": 80,
-        "stale_after_seconds": 2.0,
-        "health_wait_seconds": 2.0
+        "device_id": "",
+        "device_name": "",
+        "inspection": {}
       },
-      "pos": [40, 180],
-      "inputs": ["trigger", "action", "stream_id", "topic", "camera_info_topic", "points_topic", "frame_id", "encoding", "depth_scale", "fx", "fy", "cx", "cy", "host", "port", "max_fps", "max_width", "jpeg_quality", "stale_after_seconds", "health_wait_seconds"],
-      "outputs": ["preview", "streaming", "stream_url", "snapshot_url", "health_url", "frame_url", "stream_id", "depth_stream", "point_cloud_stream", "health", "report"],
+      "pos": [
+        40,
+        -80
+      ],
+      "inputs": [
+        "device_id",
+        "device_name",
+        "inspection"
+      ],
+      "outputs": [
+        "configured",
+        "inspection_available",
+        "device",
+        "inspection",
+        "report"
+      ],
       "input_types": {
-        "trigger": "Any",
-        "action": "Text",
-        "stream_id": "Text",
-        "topic": "Text",
-        "camera_info_topic": "Text",
-        "points_topic": "Text",
-        "frame_id": "Text",
-        "encoding": "Text",
-        "depth_scale": "Float",
-        "fx": "Float",
-        "fy": "Float",
-        "cx": "Float",
-        "cy": "Float",
-        "host": "Text",
-        "port": "Int",
-        "max_fps": "Float",
-        "max_width": "Int",
-        "jpeg_quality": "Int",
-        "stale_after_seconds": "Float",
-        "health_wait_seconds": "Float"
+        "device_id": "Text",
+        "device_name": "Text",
+        "inspection": "Dict"
       },
       "output_types": {
-        "preview": "Image",
-        "streaming": "Bool",
-        "stream_url": "Text",
-        "snapshot_url": "Text",
-        "health_url": "Text",
-        "frame_url": "Text",
-        "stream_id": "Text",
-        "depth_stream": "Dict",
-        "point_cloud_stream": "Dict",
-        "health": "Dict",
+        "configured": "Bool",
+        "inspection_available": "Bool",
+        "device": "Dict",
+        "inspection": "Dict",
         "report": "Text"
       },
       "input_defaults": {
+        "device_id": "",
+        "device_name": "",
+        "inspection": {}
+      }
+    },
+    "depth_source": {
+      "id": "depth_source",
+      "type": "ROS2",
+      "params": {
         "action": "start",
-        "stream_id": "depth_camera",
         "topic": "/camera/depth/image_raw",
-        "camera_info_topic": "/camera/depth/camera_info",
-        "points_topic": "",
-        "frame_id": "camera_depth",
-        "encoding": "auto",
-        "depth_scale": 0.001,
-        "fx": 0.0,
-        "fy": 0.0,
-        "cx": 0.0,
-        "cy": 0.0,
-        "host": "127.0.0.1",
-        "port": 0,
-        "max_fps": 10.0,
-        "max_width": 960,
-        "jpeg_quality": 80,
-        "stale_after_seconds": 2.0,
-        "health_wait_seconds": 2.0
+        "message_type": "sensor_msgs/msg/Image",
+        "transport": "image",
+        "stream_options": {
+          "host": "127.0.0.1",
+          "port": 0,
+          "max_fps": 15,
+          "max_width": 960,
+          "jpeg_quality": 80
+        },
+        "node_name": "blacknode_depth_source",
+        "history": 2,
+        "timeout": 15,
+        "stale_after_seconds": 2,
+        "qos": "sensor_data"
+      },
+      "pos": [
+        40,
+        180
+      ],
+      "inputs": [
+        "trigger",
+        "device",
+        "action",
+        "topic",
+        "message_type",
+        "transport",
+        "stream_options",
+        "node_name",
+        "history",
+        "timeout",
+        "stale_after_seconds",
+        "qos"
+      ],
+      "outputs": [
+        "running",
+        "message",
+        "messages",
+        "stream",
+        "status",
+        "received",
+        "backend",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "device": "Dict",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "transport": "Text",
+        "stream_options": "Dict",
+        "node_name": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float",
+        "qos": "Text"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "transport": "auto",
+        "stream_options": {},
+        "node_name": "blacknode_ros2_topic",
+        "history": 10,
+        "timeout": 10,
+        "stale_after_seconds": 2,
+        "qos": "sensor_data"
       },
       "input_choices": {
-        "action": ["start", "stop"],
-        "encoding": ["auto", "16UC1", "32FC1"]
+        "action": [
+          "once",
+          "start",
+          "status",
+          "stop"
+        ],
+        "transport": [
+          "auto",
+          "message",
+          "image"
+        ],
+        "qos": [
+          "sensor_data",
+          "reliable",
+          "transient_local"
+        ]
       }
     },
     "depth_camera": {
@@ -123,11 +181,37 @@
         "camera_info_topic": "/camera/depth/camera_info",
         "points_topic": "",
         "frame_id": "camera_depth",
-        "stale_after_seconds": 2.0
+        "stale_after_seconds": 2
       },
-      "pos": [470, 180],
-      "inputs": ["preview", "provider_state", "depth_stream", "point_cloud_stream", "health", "hardware", "attachment_id", "depth_topic", "camera_info_topic", "points_topic", "frame_id", "stale_after_seconds"],
-      "outputs": ["preview", "ready", "depth_camera", "depth_stream", "point_cloud_stream", "health", "hardware", "attachment_configuration", "report"],
+      "pos": [
+        470,
+        180
+      ],
+      "inputs": [
+        "preview",
+        "provider_state",
+        "depth_stream",
+        "point_cloud_stream",
+        "health",
+        "hardware",
+        "attachment_id",
+        "depth_topic",
+        "camera_info_topic",
+        "points_topic",
+        "frame_id",
+        "stale_after_seconds"
+      ],
+      "outputs": [
+        "preview",
+        "ready",
+        "depth_camera",
+        "depth_stream",
+        "point_cloud_stream",
+        "health",
+        "hardware",
+        "attachment_configuration",
+        "report"
+      ],
       "input_types": {
         "preview": "Image",
         "provider_state": "Dict",
@@ -159,7 +243,7 @@
         "camera_info_topic": "/camera/depth/camera_info",
         "points_topic": "",
         "frame_id": "camera_depth",
-        "stale_after_seconds": 2.0
+        "stale_after_seconds": 2
       }
     },
     "projector": {
@@ -168,22 +252,45 @@
       "params": {
         "enabled": true,
         "minimum_depth_m": 0.15,
-        "maximum_depth_m": 8.0,
+        "maximum_depth_m": 8,
         "downsample_stride": 2,
         "maximum_points": 50000,
-        "stale_after_seconds": 2.0,
+        "stale_after_seconds": 2,
         "target_frame": "base_link",
         "sensor_x_m": 0.18,
-        "sensor_y_m": 0.0,
+        "sensor_y_m": 0,
         "sensor_z_m": 0.32,
-        "sensor_roll_rad": 0.0,
-        "sensor_pitch_rad": 0.0,
-        "sensor_yaw_rad": 0.0,
+        "sensor_roll_rad": 0,
+        "sensor_pitch_rad": 0,
+        "sensor_yaw_rad": 0,
         "compare_cpu": false
       },
-      "pos": [500, 590],
-      "inputs": ["enabled", "minimum_depth_m", "maximum_depth_m", "downsample_stride", "maximum_points", "stale_after_seconds", "target_frame", "sensor_x_m", "sensor_y_m", "sensor_z_m", "sensor_roll_rad", "sensor_pitch_rad", "sensor_yaw_rad", "compare_cpu"],
-      "outputs": ["stage", "enabled", "workload", "report"],
+      "pos": [
+        500,
+        590
+      ],
+      "inputs": [
+        "enabled",
+        "minimum_depth_m",
+        "maximum_depth_m",
+        "downsample_stride",
+        "maximum_points",
+        "stale_after_seconds",
+        "target_frame",
+        "sensor_x_m",
+        "sensor_y_m",
+        "sensor_z_m",
+        "sensor_roll_rad",
+        "sensor_pitch_rad",
+        "sensor_yaw_rad",
+        "compare_cpu"
+      ],
+      "outputs": [
+        "stage",
+        "enabled",
+        "workload",
+        "report"
+      ],
       "input_types": {
         "enabled": "Bool",
         "minimum_depth_m": "Float",
@@ -209,17 +316,17 @@
       "input_defaults": {
         "enabled": true,
         "minimum_depth_m": 0.1,
-        "maximum_depth_m": 8.0,
+        "maximum_depth_m": 8,
         "downsample_stride": 2,
         "maximum_points": 50000,
-        "stale_after_seconds": 2.0,
+        "stale_after_seconds": 2,
         "target_frame": "base_link",
-        "sensor_x_m": 0.0,
-        "sensor_y_m": 0.0,
-        "sensor_z_m": 0.0,
-        "sensor_roll_rad": 0.0,
-        "sensor_pitch_rad": 0.0,
-        "sensor_yaw_rad": 0.0,
+        "sensor_x_m": 0,
+        "sensor_y_m": 0,
+        "sensor_z_m": 0,
+        "sensor_roll_rad": 0,
+        "sensor_pitch_rad": 0,
+        "sensor_yaw_rad": 0,
         "compare_cpu": false
       }
     },
@@ -235,23 +342,64 @@
         "processor": "warp",
         "device": "cuda:0",
         "filter_min_m": 0.1,
-        "filter_max_m": 8.0,
+        "filter_max_m": 8,
         "downsample_stride": 1,
-        "sensor_x_m": 0.0,
-        "sensor_y_m": 0.0,
-        "sensor_yaw_rad": 0.0,
+        "sensor_x_m": 0,
+        "sensor_y_m": 0,
+        "sensor_yaw_rad": 0,
         "point_radius_m": 0.015,
         "fps": 30,
         "animate_scan": false,
         "show_rays": false,
         "accumulate_hits": false,
         "max_accumulated_points": 50000,
-        "pulse_hz": 1.0,
+        "pulse_hz": 1,
         "pose_sync_tolerance_s": 0.25
       },
-      "pos": [930, 100],
-      "inputs": ["action", "source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "pose_static", "pose_parent_frame", "pose_child_frame", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
-      "outputs": ["running", "live", "scene", "status", "viewer", "report"],
+      "pos": [
+        930,
+        100
+      ],
+      "inputs": [
+        "action",
+        "source",
+        "lidar_source",
+        "color_source",
+        "depth_projection",
+        "tsdf_integration",
+        "surface_extraction",
+        "sensor_fusion",
+        "pose",
+        "pose_static",
+        "pose_parent_frame",
+        "pose_child_frame",
+        "viewer_id",
+        "mode",
+        "processor",
+        "device",
+        "filter_min_m",
+        "filter_max_m",
+        "downsample_stride",
+        "sensor_x_m",
+        "sensor_y_m",
+        "sensor_yaw_rad",
+        "point_radius_m",
+        "fps",
+        "animate_scan",
+        "show_rays",
+        "accumulate_hits",
+        "max_accumulated_points",
+        "pulse_hz",
+        "pose_sync_tolerance_s"
+      ],
+      "outputs": [
+        "running",
+        "live",
+        "scene",
+        "status",
+        "viewer",
+        "report"
+      ],
       "input_types": {
         "action": "Text",
         "source": "Dict",
@@ -301,34 +449,282 @@
         "processor": "warp",
         "device": "cuda:0",
         "filter_min_m": 0.1,
-        "filter_max_m": 12.0,
+        "filter_max_m": 12,
         "downsample_stride": 1,
-        "sensor_x_m": 0.0,
-        "sensor_y_m": 0.0,
-        "sensor_yaw_rad": 0.0,
+        "sensor_x_m": 0,
+        "sensor_y_m": 0,
+        "sensor_yaw_rad": 0,
         "point_radius_m": 0.025,
         "fps": 30,
         "animate_scan": true,
         "show_rays": true,
         "accumulate_hits": true,
         "max_accumulated_points": 50000,
-        "pulse_hz": 1.0,
+        "pulse_hz": 1,
         "pose_sync_tolerance_s": 0.25
       },
       "input_choices": {
-        "action": ["status", "start", "clear", "pause", "resume", "stop"],
-        "mode": ["editor", "device"],
-        "processor": ["warp"],
-        "device": ["cuda:0", "cpu"]
+        "action": [
+          "status",
+          "start",
+          "clear",
+          "pause",
+          "resume",
+          "stop"
+        ],
+        "mode": [
+          "editor",
+          "device"
+        ],
+        "processor": [
+          "warp"
+        ],
+        "device": [
+          "cuda:0",
+          "cpu"
+        ]
+      }
+    },
+    "depth_source_processor": {
+      "id": "depth_source_processor",
+      "type": "DepthImageProcessor",
+      "params": {
+        "frame_id": "camera_depth",
+        "encoding": "auto",
+        "depth_scale": 0.001,
+        "fx": 525,
+        "fy": 525,
+        "cx": 319.5,
+        "cy": 239.5,
+        "stale_after_seconds": 2,
+        "health_wait_seconds": 2
+      },
+      "pos": [
+        430,
+        180
+      ],
+      "inputs": [
+        "source",
+        "camera_info_source",
+        "point_cloud_source",
+        "frame_id",
+        "encoding",
+        "depth_scale",
+        "fx",
+        "fy",
+        "cx",
+        "cy",
+        "stale_after_seconds",
+        "health_wait_seconds"
+      ],
+      "outputs": [
+        "preview",
+        "depth_stream",
+        "point_cloud_stream",
+        "health",
+        "calibration",
+        "report"
+      ],
+      "input_types": {
+        "source": "Dict",
+        "camera_info_source": "Dict",
+        "point_cloud_source": "Dict",
+        "frame_id": "Text",
+        "encoding": "Text",
+        "depth_scale": "Float",
+        "fx": "Float",
+        "fy": "Float",
+        "cx": "Float",
+        "cy": "Float",
+        "stale_after_seconds": "Float",
+        "health_wait_seconds": "Float"
+      },
+      "output_types": {
+        "preview": "Image",
+        "depth_stream": "Dict",
+        "point_cloud_stream": "Dict",
+        "health": "Dict",
+        "calibration": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "frame_id": "camera_depth",
+        "encoding": "auto",
+        "depth_scale": 0.001,
+        "fx": 0,
+        "fy": 0,
+        "cx": 0,
+        "cy": 0,
+        "stale_after_seconds": 2,
+        "health_wait_seconds": 0
+      },
+      "input_choices": {
+        "encoding": [
+          "auto",
+          "16UC1",
+          "32FC1"
+        ]
+      }
+    },
+    "depth_source_camera_info": {
+      "id": "depth_source_camera_info",
+      "type": "ROS2",
+      "params": {
+        "action": "start",
+        "topic": "/camera/depth/camera_info",
+        "message_type": "sensor_msgs/msg/CameraInfo",
+        "transport": "message",
+        "stream_options": {},
+        "node_name": "blacknode_depth_source_camera_info",
+        "history": 2,
+        "timeout": 10,
+        "stale_after_seconds": 2,
+        "qos": "sensor_data"
+      },
+      "pos": [
+        40,
+        370
+      ],
+      "inputs": [
+        "trigger",
+        "device",
+        "action",
+        "topic",
+        "message_type",
+        "transport",
+        "stream_options",
+        "node_name",
+        "history",
+        "timeout",
+        "stale_after_seconds",
+        "qos"
+      ],
+      "outputs": [
+        "running",
+        "message",
+        "messages",
+        "stream",
+        "status",
+        "received",
+        "backend",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "device": "Dict",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "transport": "Text",
+        "stream_options": "Dict",
+        "node_name": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float",
+        "qos": "Text"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "transport": "auto",
+        "stream_options": {},
+        "node_name": "blacknode_ros2_topic",
+        "history": 10,
+        "timeout": 10,
+        "stale_after_seconds": 2,
+        "qos": "sensor_data"
+      },
+      "input_choices": {
+        "action": [
+          "once",
+          "start",
+          "status",
+          "stop"
+        ],
+        "transport": [
+          "auto",
+          "message",
+          "image"
+        ],
+        "qos": [
+          "sensor_data",
+          "reliable",
+          "transient_local"
+        ]
       }
     }
   },
   "edges": [
-    {"from": "depth_source", "from_port": "preview", "to": "depth_camera", "to_port": "preview"},
-    {"from": "depth_source", "from_port": "depth_stream", "to": "depth_camera", "to_port": "depth_stream"},
-    {"from": "depth_source", "from_port": "point_cloud_stream", "to": "depth_camera", "to_port": "point_cloud_stream"},
-    {"from": "depth_source", "from_port": "health", "to": "depth_camera", "to_port": "health"},
-    {"from": "depth_camera", "from_port": "depth_stream", "to": "viewer", "to_port": "source"},
-    {"from": "projector", "from_port": "stage", "to": "viewer", "to_port": "depth_projection"}
+    {
+      "from": "device",
+      "from_port": "device",
+      "to": "depth_source",
+      "to_port": "device"
+    },
+    {
+      "from": "depth_source_processor",
+      "from_port": "preview",
+      "to": "depth_camera",
+      "to_port": "preview"
+    },
+    {
+      "from": "depth_source_processor",
+      "from_port": "depth_stream",
+      "to": "depth_camera",
+      "to_port": "depth_stream"
+    },
+    {
+      "from": "depth_source_processor",
+      "from_port": "point_cloud_stream",
+      "to": "depth_camera",
+      "to_port": "point_cloud_stream"
+    },
+    {
+      "from": "depth_source_processor",
+      "from_port": "health",
+      "to": "depth_camera",
+      "to_port": "health"
+    },
+    {
+      "from": "depth_camera",
+      "from_port": "depth_stream",
+      "to": "viewer",
+      "to_port": "source"
+    },
+    {
+      "from": "projector",
+      "from_port": "stage",
+      "to": "viewer",
+      "to_port": "depth_projection"
+    },
+    {
+      "from": "depth_source",
+      "from_port": "stream",
+      "to": "depth_source_processor",
+      "to_port": "source"
+    },
+    {
+      "from": "depth_source_camera_info",
+      "from_port": "stream",
+      "to": "depth_source_processor",
+      "to_port": "camera_info_source"
+    },
+    {
+      "from": "device",
+      "from_port": "device",
+      "to": "depth_source_camera_info",
+      "to_port": "device"
+    }
   ]
 }

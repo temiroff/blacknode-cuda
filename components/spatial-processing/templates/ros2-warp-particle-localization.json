@@ -14,7 +14,11 @@
     "required_packages": [
       "blacknode-robot",
       "blacknode-ros2",
-      "blacknode-cuda"
+      "blacknode-cuda",
+      "blacknode-perception"
+    ],
+    "required_components": [
+      "blacknode-perception/lidar"
     ]
   },
   "node_meta": {
@@ -69,7 +73,9 @@
         "qos": "sensor_data",
         "history": 20,
         "timeout": 10.0,
-        "stale_after_seconds": 1.0
+        "stale_after_seconds": 1.0,
+        "transport": "message",
+        "stream_options": {}
       },
       "pos": [
         390,
@@ -81,11 +87,13 @@
         "action",
         "topic",
         "message_type",
+        "transport",
+        "stream_options",
         "node_name",
-        "qos",
         "history",
         "timeout",
-        "stale_after_seconds"
+        "stale_after_seconds",
+        "qos"
       ],
       "outputs": [
         "running",
@@ -103,11 +111,13 @@
         "action": "Text",
         "topic": "Text",
         "message_type": "Text",
+        "transport": "Text",
+        "stream_options": "Dict",
         "node_name": "Text",
-        "qos": "Text",
         "history": "Int",
         "timeout": "Float",
-        "stale_after_seconds": "Float"
+        "stale_after_seconds": "Float",
+        "qos": "Text"
       },
       "output_types": {
         "running": "Bool",
@@ -123,11 +133,13 @@
         "action": "status",
         "topic": "/scan",
         "message_type": "",
+        "transport": "auto",
+        "stream_options": {},
         "node_name": "blacknode_ros2_topic",
-        "qos": "default",
         "history": 10,
         "timeout": 10.0,
-        "stale_after_seconds": 2.0
+        "stale_after_seconds": 2.0,
+        "qos": "sensor_data"
       },
       "input_choices": {
         "action": [
@@ -136,11 +148,14 @@
           "status",
           "stop"
         ],
+        "transport": [
+          "auto",
+          "message",
+          "image"
+        ],
         "qos": [
-          "default",
           "sensor_data",
           "reliable",
-          "best_effort",
           "transient_local"
         ]
       }
@@ -475,6 +490,34 @@
         "random_seed": 7,
         "compare_cpu": false
       }
+    },
+    "scan_processor": {
+      "id": "scan_processor",
+      "type": "LaserScanProcessor",
+      "params": {},
+      "pos": [
+        690.0,
+        100.0
+      ],
+      "inputs": [
+        "source"
+      ],
+      "outputs": [
+        "stream",
+        "laser_scan",
+        "health",
+        "report"
+      ],
+      "input_types": {
+        "source": "Dict"
+      },
+      "output_types": {
+        "stream": "Dict",
+        "laser_scan": "Dict",
+        "health": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {}
     }
   },
   "edges": [
@@ -491,7 +534,7 @@
       "to_port": "device"
     },
     {
-      "from": "scan",
+      "from": "scan_processor",
       "from_port": "stream",
       "to": "slam",
       "to_port": "source"
@@ -507,6 +550,12 @@
       "from_port": "stage",
       "to": "slam",
       "to_port": "particle_localization"
+    },
+    {
+      "from": "scan",
+      "from_port": "stream",
+      "to": "scan_processor",
+      "to_port": "source"
     }
   ]
 }
