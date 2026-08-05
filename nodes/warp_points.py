@@ -496,13 +496,50 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
     )
 
 
+_VIEWER_ACTION_INPUT = {
+    "action": Enum(["status", "start", "clear", "pause", "resume", "stop"], default="status"),
+}
+_VIEWER_POSE_INPUTS = {
+    "pose": Dict,
+    "pose_static": Dict,
+    "pose_parent_frame": Text(default="odom"),
+    "pose_child_frame": Text(default="auto"),
+}
+_VIEWER_RENDER_INPUTS = {
+    "mode": Enum(["editor", "device"], default="editor"),
+    "device": Enum(["cuda:0", "cpu"], default="cuda:0"),
+    "filter_min_m": Float(default=0.1),
+    "filter_max_m": Float(default=12.0),
+    "downsample_stride": Int(default=1),
+    "sensor_x_m": Float(default=0.0),
+    "sensor_y_m": Float(default=0.0),
+    "sensor_yaw_rad": Float(default=0.0),
+    "point_radius_m": Float(default=0.025),
+    "fps": Int(default=30),
+    "animate_scan": Bool(default=True),
+    "show_rays": Bool(default=True),
+    "accumulate_hits": Bool(default=True),
+    "max_accumulated_points": Int(default=50_000),
+    "pulse_hz": Float(default=1.0),
+    "pose_sync_tolerance_s": Float(default=0.25),
+}
+_VIEWER_OUTPUTS = {
+    "running": Bool,
+    "live": Bool,
+    "scene": Dict,
+    "status": Dict,
+    "viewer": Dict,
+    "report": Text,
+}
+
+
 @node(
     name="Viewer",
     component="spatial-processing",
     category=_CATEGORY,
     description=(
-        "Render a managed LaserScan or calibrated metric-depth stream as a live "
-        "Warp point cloud inside the editor, with native device viewing for scans."
+        "Compatibility alias for saved spatial-viewer workflows. New graphs should "
+        "choose LiDARViewer, DepthCloudViewer, ReconstructionViewer, FusionViewer, or MapViewer."
     ),
     inputs={
         "action": Enum(["status", "start", "clear", "pause", "resume", "stop"], default="status"),
@@ -546,6 +583,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
     },
     primary_inputs=["source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "action", "mode"],
     primary_outputs=["scene", "status", "report"],
+    hidden=True,
     live=True,
 )
 def viewer(ctx: dict) -> dict:
@@ -687,6 +725,125 @@ def viewer(ctx: dict) -> dict:
         },
         source_reader=source_reader if callable(source_reader) else None,
     )
+
+
+def _specialized_viewer(ctx: dict) -> dict:
+    """Run the shared managed renderer behind a role-specific public contract."""
+    return viewer(ctx)
+
+
+@node(
+    name="LiDARViewer",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description="Render processed LiDAR scans in a sensor-local 3D view with axes and no map floor.",
+    inputs={
+        **_VIEWER_ACTION_INPUT,
+        "source": Dict,
+        **_VIEWER_POSE_INPUTS,
+        "viewer_id": Text(default="lidar_viewer"),
+        **_VIEWER_RENDER_INPUTS,
+    },
+    outputs=_VIEWER_OUTPUTS,
+    primary_inputs=["source", "pose", "action", "mode"],
+    primary_outputs=["scene", "status", "report"],
+    live=True,
+)
+def lidar_viewer(ctx: dict) -> dict:
+    return _specialized_viewer(ctx)
+
+
+@node(
+    name="DepthCloudViewer",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description="Render calibrated Warp-projected metric depth as a 3D point cloud with no map floor.",
+    inputs={
+        **_VIEWER_ACTION_INPUT,
+        "source": Dict,
+        "depth_projection": Dict,
+        **_VIEWER_POSE_INPUTS,
+        "viewer_id": Text(default="depth_cloud_viewer"),
+        **_VIEWER_RENDER_INPUTS,
+    },
+    outputs=_VIEWER_OUTPUTS,
+    primary_inputs=["source", "depth_projection", "pose", "action", "mode"],
+    primary_outputs=["scene", "status", "report"],
+    live=True,
+)
+def depth_cloud_viewer(ctx: dict) -> dict:
+    return _specialized_viewer(ctx)
+
+
+@node(
+    name="ReconstructionViewer",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description="Render pose-registered RGB-D TSDF surface reconstruction in a dedicated 3D view.",
+    inputs={
+        **_VIEWER_ACTION_INPUT,
+        "source": Dict,
+        "color_source": Dict,
+        "depth_projection": Dict,
+        "tsdf_integration": Dict,
+        "surface_extraction": Dict,
+        **_VIEWER_POSE_INPUTS,
+        "viewer_id": Text(default="reconstruction_viewer"),
+        **_VIEWER_RENDER_INPUTS,
+    },
+    outputs=_VIEWER_OUTPUTS,
+    primary_inputs=["source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "pose", "action"],
+    primary_outputs=["scene", "status", "report"],
+    live=True,
+)
+def reconstruction_viewer(ctx: dict) -> dict:
+    return _specialized_viewer(ctx)
+
+
+@node(
+    name="FusionViewer",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description="Render synchronized LiDAR and RGB-D fusion with alignment diagnostics and sensor axes.",
+    inputs={
+        **_VIEWER_ACTION_INPUT,
+        "source": Dict,
+        "lidar_source": Dict,
+        "color_source": Dict,
+        "depth_projection": Dict,
+        "sensor_fusion": Dict,
+        **_VIEWER_POSE_INPUTS,
+        "viewer_id": Text(default="fusion_viewer"),
+        **_VIEWER_RENDER_INPUTS,
+    },
+    outputs=_VIEWER_OUTPUTS,
+    primary_inputs=["source", "lidar_source", "color_source", "depth_projection", "sensor_fusion", "pose", "action"],
+    primary_outputs=["scene", "status", "report"],
+    live=True,
+)
+def fusion_viewer(ctx: dict) -> dict:
+    return _specialized_viewer(ctx)
+
+
+@node(
+    name="MapViewer",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description="Render robot pose, occupancy, free-space floor, and accumulated spatial-map data.",
+    inputs={
+        **_VIEWER_ACTION_INPUT,
+        "source": Dict,
+        **_VIEWER_POSE_INPUTS,
+        "viewer_id": Text(default="map_viewer"),
+        **_VIEWER_RENDER_INPUTS,
+    },
+    outputs=_VIEWER_OUTPUTS,
+    primary_inputs=["source", "pose", "action", "mode"],
+    primary_outputs=["scene", "status", "report"],
+    live=True,
+)
+def map_viewer(ctx: dict) -> dict:
+    return _specialized_viewer(ctx)
 
 
 def _run_gpu_interop_viewer_loop(
