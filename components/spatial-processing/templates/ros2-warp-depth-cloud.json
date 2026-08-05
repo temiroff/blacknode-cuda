@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Stream provider-neutral metric depth through a compact binary frame handle, project calibrated pixels with Warp, estimate surface normals and confidence, and inspect the live 3D surface in the shared Viewer.",
+    "description": "Stream provider-neutral metric depth through a compact binary frame handle, project calibrated pixels with Warp, estimate surface normals and confidence, and inspect the live 3D surface in the dedicated depth-cloud viewer.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
@@ -332,7 +332,7 @@
     },
     "viewer": {
       "id": "viewer",
-      "type": "Viewer",
+      "type": "DepthCloudViewer",
       "params": {
         "action": "start",
         "pose_parent_frame": "odom",

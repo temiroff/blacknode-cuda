@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Fuse synchronized ROS 2 LiDAR, aligned metric depth, RGB, and odometry in a shared 3D Viewer with bounded Warp HashGrid calibration, alignment residuals, confidence, and per-sensor colors.",
+    "description": "Fuse synchronized ROS 2 LiDAR, aligned metric depth, RGB, and odometry in a dedicated fusion viewer with bounded Warp HashGrid calibration, alignment residuals, confidence, and per-sensor colors.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
@@ -684,7 +684,7 @@
     },
     "viewer": {
       "id": "viewer",
-      "type": "Viewer",
+      "type": "FusionViewer",
       "pos": [
         1110,
         140

@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Pair ROS 2 aligned metric depth and RGB with synchronized odometry; integrate fresh frames into a persistent bounded Warp TSDF volume; extract a colored surface; and inspect it in the shared 3D Viewer.",
+    "description": "Pair ROS 2 aligned metric depth and RGB with synchronized odometry; integrate fresh frames into a persistent bounded Warp TSDF volume; extract a colored surface; and inspect it in the dedicated reconstruction viewer.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
@@ -633,7 +633,7 @@
     },
     "viewer": {
       "id": "viewer",
-      "type": "Viewer",
+      "type": "ReconstructionViewer",
       "params": {
         "action": "start",
         "pose_parent_frame": "odom",

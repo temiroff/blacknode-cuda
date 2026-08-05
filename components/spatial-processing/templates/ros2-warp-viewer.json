@@ -9,7 +9,7 @@
   },
   "metadata": {
     "template": true,
-    "description": "Select a paired compute device, subscribe through generic ROS2 transport, normalize the scan, and read the pose topic, register each fresh scan with the nearest pose, process it with Warp, and inspect the bounded map in the 3D-orbit Viewer. Set mode=device before deployment to open the native viewer on that device.",
+    "description": "Select a paired compute device, subscribe through generic ROS2 transport, normalize the scan, register each fresh scan with the nearest pose, process it with Warp, and inspect the sensor-local points in the dedicated LiDAR viewer. Set mode=device before deployment to open the native viewer on that device.",
     "color": "#76b900",
     "required_packages": [
       "blacknode-robot",
@@ -238,7 +238,7 @@
     },
     "viewer": {
       "id": "viewer",
-      "type": "Viewer",
+      "type": "LiDARViewer",
       "params": {
         "action": "start",
         "viewer_id": "ros2_scan",

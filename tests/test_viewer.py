@@ -144,7 +144,7 @@ def _processed(scan, **kwargs):
     }
 
 
-def test_viewer_registers_as_generic_live_spatial_node():
+def test_viewer_registers_as_hidden_compatibility_alias():
     fn = _NODE_REGISTRY["Viewer"]
 
     assert fn._bn_package == "blacknode-cuda"
@@ -159,8 +159,27 @@ def test_viewer_registers_as_generic_live_spatial_node():
     assert "pause" in fn._bn_input_choices["action"]
     assert "resume" in fn._bn_input_choices["action"]
     assert fn._bn_output_types["scene"] == "Dict"
+    assert fn._bn_hidden is True
     assert _NODE_REGISTRY["WarpLiDARViewer"]._bn_hidden is True
     assert _NODE_REGISTRY["WarpSLAMDiscoveryViewer"]._bn_hidden is True
+
+
+def test_specialized_spatial_viewers_publish_role_specific_contracts():
+    expected_inputs = {
+        "LiDARViewer": {"source", "pose"},
+        "DepthCloudViewer": {"source", "depth_projection"},
+        "ReconstructionViewer": {"source", "color_source", "tsdf_integration", "surface_extraction"},
+        "FusionViewer": {"source", "lidar_source", "sensor_fusion"},
+        "MapViewer": {"source", "pose"},
+    }
+    for name, inputs in expected_inputs.items():
+        fn = _NODE_REGISTRY[name]
+        assert fn._bn_package == "blacknode-cuda"
+        assert fn._bn_component == "spatial-processing"
+        assert fn._bn_live_capable is True
+        assert fn._bn_hidden is False
+        assert inputs <= set(fn._bn_inputs)
+        assert fn._bn_output_types["scene"] == "Dict"
 
 
 def test_editor_viewer_normalizes_stream_and_publishes_live_scene(monkeypatch):
