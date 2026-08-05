@@ -63,6 +63,7 @@ def slam_options(values: dict) -> dict:
         "action": Enum(["status", "start", "clear", "pause", "resume", "stop"], default="status"),
         "source": Dict,
         "odometry": Dict,
+        "particle_localization": Dict,
         "slam_id": Text(default="slam"),
         "mode": Enum(["editor", "device"], default="editor"),
         "device": Enum(["cuda:0", "cpu"], default="cuda:0"),
@@ -104,7 +105,7 @@ def slam_options(values: dict) -> dict:
         "viewer": Dict,
         "report": Text,
     },
-    primary_inputs=["source", "odometry", "action", "mode"],
+    primary_inputs=["source", "odometry", "particle_localization", "action", "mode"],
     primary_outputs=["scene", "pose", "map", "status", "report"],
     live=True,
 )
@@ -144,6 +145,22 @@ def slam(ctx: dict) -> dict:
         }
     source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
     odometry = ctx.get("odometry") if isinstance(ctx.get("odometry"), dict) else {}
+    particle_localization = (
+        ctx.get("particle_localization")
+        if isinstance(ctx.get("particle_localization"), dict)
+        else {}
+    )
+    if particle_localization and particle_localization.get("kind") != "blacknode.warp-particle-localization":
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "pose": {},
+            "map": {},
+            "status": {"state": "error", "error": "particle_localization must be a WarpParticleLocalization stage"},
+            "viewer": {},
+            "report": "Connect WarpParticleLocalization.stage to SLAM.particle_localization",
+        }
     reader = ctx.get("__message_stream_reader__")
     return slam_runtime.start_slam(
         slam_id=slam_id,
@@ -153,5 +170,6 @@ def slam(ctx: dict) -> dict:
         mode=str(ctx.get("mode") or "editor"),
         device=str(ctx.get("device") or "cuda:0"),
         options=slam_options(ctx),
+        particle_localization=particle_localization,
         source_reader=reader if callable(reader) else None,
     )

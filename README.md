@@ -63,6 +63,16 @@ npm run build:slam-viewer
 
 `SLAM` consumes the same generic scan stream and optional odometry stream. It retains every valid range sample by default after range filtering, deskews beams against synchronized odometry across each scan, performs coarse-to-fine scan matching, confidence-gates tracking corrections and map insertion, and averages repeated observations in metric map cells. Every valid real LiDAR return also launches one Warp ray-tracing thread: traversed cells fill a persistent free-floor occupancy layer whose world origin and cell centers stay fixed for the session, while repeated endpoints become confidence-gated occupied wall cells. Warp classifies and packs the complete grid at two bits per cell; the editor uploads that fixed-size payload directly as a nearest-neighbor WebGL texture, preserving every cell while avoiding growing point/color JSON. On CUDA, the fixed reference grid remains GPU-resident and Warp scores the complete coarse-to-fine pose-candidate set in parallel; CPU mode retains the NumPy matcher and caches its expanded lookup until the reference changes. The editor renders the fixed unknown extent, filled free floor, occupied walls, live scan, and robot as distinct layers. The viewer reports the Warp device, ray count, free and occupied cell counts, grid size, synchronized kernel/copy and matching time, and encoding time so the accelerated work is directly inspectable. `occupancy_radius_m` bounds the fixed grid, while `map_resolution_m` controls its cell size. Fresh stationary odometry prevents a moving person or object from dragging the fixed map, while improved whole-scan evidence overrides lagging odometry as soon as the scan matcher resolves motion. Large delayed corrections are bounded per scan so the robot pose catches up progressively instead of jumping. With accumulation off, the visible map remains frozen and a hidden registered scan keeps localization active; after Clear, the first new scan establishes that tracking reference while accumulated points stay empty. It adds loop-closure constraints, optimizes its pose graph, and publishes the map, estimated pose, status, and interactive scene. The scene keeps discovered points in the fixed `map` frame while the robot pose and current scan move through it. Tune `tracking_min_score` to reject uncertain pose corrections and `mapping_min_score` to prevent uncertain keyframes from entering the dark accumulated map. In `mode=device`, its native Jetson viewer writes Warp output directly into CUDA-registered OpenGL point buffers and falls back to the standard renderer when graphics interop is unavailable. Open the **ROS2 SLAM** template, select the paired device, set the topic names, and press **Go live**.
 
+`WarpParticleLocalization` is a graph-visible compute stage for `SLAM`. Connect
+its `stage` output to `SLAM.particle_localization` to score up to 65,536 pose
+hypotheses against every fresh scan while the managed SLAM session retains GPU
+ownership. The viewer draws a confidence-colored hypothesis cloud and reports
+hypotheses × beams, total score evaluations, synchronized pipeline time, an
+explicit CPU limit when CUDA is unavailable, and optional same-workload CPU
+comparison. Phase-one pipeline timing includes hypothesis upload, Warp scoring,
+synchronization, and score readback. Open **ROS2 Warp Particle Localization**
+for the complete wiring.
+
 ## Included workflows
 
 - GPU image filtering and live filter streaming
@@ -70,6 +80,12 @@ npm run build:slam-viewer
 - LiDAR starter workflows supplied by `blacknode-perception`, which owns the normalized sensor contract
 - ROS 2 device stream to the generic live `Viewer`
 - ROS 2 scan and odometry streams to live `SLAM`
+- ROS 2 scan and odometry streams through a visible `WarpParticleLocalization`
+  stage into live `SLAM`
+
+See [Warp Sensor Compute Roadmap](SENSOR_GPU_ROADMAP.md) for the staged dynamic
+occupancy, trajectory evaluation, live depth projection, RGB-D reconstruction,
+and LiDAR/camera fusion plan.
 
 Select `cpu` for portable Warp verification or `cuda:0` for GPU execution. Enable `compare_numpy` when a warmed correctness and timing comparison is needed. Benchmarks report the device, data shape/type, warmup conditions, synchronized timing, and correctness result.
 
