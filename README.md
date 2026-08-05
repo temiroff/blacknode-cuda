@@ -83,7 +83,10 @@ comparison. Motion is evaluated against a held temporal reference so slow
 movement accumulates above sensor jitter, unmatched returns remain transient
 until confirmed, and only confirmed-static endpoints contribute occupied map
 evidence. Free rays reduce bounded occupancy evidence so removed objects clear
-from the map. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
+from the map. A Warp coherence pass rejects isolated edge flicker, and only
+confirmed-static returns can influence scan matching so a moving foreground
+object cannot drag the fixed walls. The viewer marks coherent motion with
+orange points only. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
 
 ## Included workflows
 

@@ -547,6 +547,15 @@ def _static_mapping_mask(session: dict[str, Any], point_count: int) -> Any:
     return np.ones(point_count, dtype=bool)
 
 
+def _motion_display_mask(session: dict[str, Any], point_count: int) -> Any:
+    """Return only coherent matched motion; transient points stay visually neutral."""
+    result = session.get("dynamic_result") if isinstance(session.get("dynamic_result"), dict) else {}
+    mask = result.get("_motion_mask")
+    if isinstance(mask, np.ndarray) and mask.dtype == bool and len(mask) == point_count:
+        return mask
+    return np.zeros(point_count, dtype=bool)
+
+
 def _edge_error(first: Any, second: Any, measurement: Any) -> Any:
     predicted = _relative(first, second)
     error = predicted - measurement
@@ -846,13 +855,13 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
     dynamic_summary = {
         key: value
         for key, value in dynamic_result.items()
-        if key not in {"_dynamic_mask", "_static_mask", "points", "velocities", "scores"}
+        if key not in {"_dynamic_mask", "_static_mask", "_motion_mask", "points", "velocities", "scores"}
     }
     dynamic_summary["trail_seconds"] = float(
         (session.get("dynamic_occupancy") or {}).get("trail_seconds") or 0.35
     )
-    static_mask = _static_mapping_mask(session, len(current_world))
-    current_static_world = current_world[static_mask]
+    motion_mask = _motion_display_mask(session, len(current_world))
+    current_nonmoving_world = current_world[~motion_mask]
     return {
         "kind": "blacknode.viewer-scene",
         "schema_version": 1,
@@ -862,7 +871,7 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "sequence": int(scan.get("source_time_ns") or 0),
         "points": display.astype(float).tolist(),
         "colors": [],
-        "current_points": current_static_world.astype(float).tolist(),
+        "current_points": current_nonmoving_world.astype(float).tolist(),
         "current_colors": [],
         "floor_points": [],
         "floor_colors": [],
@@ -933,6 +942,7 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
             "tracking_correction_limited": bool(session.get("tracking_correction_limited")),
             "matching_backend": str(session.get("matching_backend") or "numpy"),
             "matching_kernel_ms": float(session.get("matching_kernel_ms") or 0.0),
+            "tracking_static_returns": int(session.get("tracking_static_returns") or 0),
             "map_update_rejected": bool(session.get("map_update_rejected")),
             "deskewed": bool(session.get("deskewed")),
             "keyframes": len(keyframes),
@@ -1189,6 +1199,14 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
             initial = _compose(previous_pose, _relative(session["previous_pose"], previous_pose))
         else:
             initial = previous_pose.copy()
+        _evaluate_dynamic_occupancy(
+            session,
+            _transform_points(local_points, initial),
+            scan_time_ns,
+        )
+        static_mask = _static_mapping_mask(session, len(local_points))
+        tracking_points = local_points[static_mask]
+        session["tracking_static_returns"] = int(len(tracking_points))
         map_reference = session.get("map_points")
         tracking_reference = session.get("tracking_reference_points")
         reference = (
@@ -1196,7 +1214,7 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
             if map_reference is not None and len(map_reference) >= 8
             else tracking_reference
         )
-        if reference is not None and len(reference) >= 8:
+        if reference is not None and len(reference) >= 8 and len(tracking_points) >= 8:
             resolution = float(options["map_resolution_m"])
             linear_window = float(options["match_linear_window_m"])
             gpu_matcher = _cached_warp_matcher(session, reference, resolution, linear_window)
@@ -1204,10 +1222,10 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
                 session, reference, resolution,
             )
             prior_match_score = (
-                gpu_matcher.score_pose(local_points, initial)
+                gpu_matcher.score_pose(tracking_points, initial)
                 if gpu_matcher is not None
                 else _pose_match_score(
-                    local_points,
+                    tracking_points,
                     reference,
                     initial,
                     resolution,
@@ -1215,7 +1233,7 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
                 )
             )
             matched_pose, score = correlative_match(
-                local_points,
+                tracking_points,
                 reference,
                 initial,
                 resolution=resolution,
@@ -1263,6 +1281,13 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         tracking_accepted = True
         if odometry is not None:
             session["odometry_origin"] = odometry.copy()
+        _evaluate_dynamic_occupancy(
+            session,
+            _transform_points(local_points, pose),
+            scan_time_ns,
+        )
+        static_mask = _static_mapping_mask(session, len(local_points))
+        session["tracking_static_returns"] = int(np.count_nonzero(static_mask))
 
     session["previous_pose"] = previous_pose
     session["pose"] = pose
@@ -1276,12 +1301,6 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         session["last_odometry"] = odometry
         if odometry_sample_time_ns > 0:
             session["last_odometry_sample_time_ns"] = odometry_sample_time_ns
-    _evaluate_dynamic_occupancy(
-        session,
-        _transform_points(local_points, pose),
-        scan_time_ns,
-    )
-    static_mask = _static_mapping_mask(session, len(local_points))
     mapping_points = local_points[static_mask]
     should_add_keyframe = (
         not session.get("mapping_paused")
@@ -1336,6 +1355,7 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
             "stationary_odometry_locked": stationary_odometry_locked,
             "scan_motion_override": scan_motion_override,
             "tracking_correction_limited": tracking_correction_limited,
+            "tracking_static_returns": int(session.get("tracking_static_returns") or 0),
             "map_update_rejected": map_update_rejected,
             "deskewed": deskewed,
             "keyframes": len(session.get("keyframes") or []),
@@ -1515,6 +1535,7 @@ def start_slam(
         "prior_match_score": 0.0,
         "scan_motion_override": False,
         "tracking_correction_limited": False,
+        "tracking_static_returns": 0,
         "source_time_ns": 0,
         "source_received": 0,
         "loop_closures": 0,

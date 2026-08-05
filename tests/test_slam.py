@@ -285,10 +285,21 @@ def test_dynamic_occupancy_stage_is_explicit():
 
 def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypatch):
     slam_runtime.stop_slam()
-    fixed = np.asarray([[float(index), 0.0, 0.0] for index in range(10)], dtype=np.float32)
+    fixed = np.asarray([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [3.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        [4.0, 0.04, 0.0],
+        [5.0, 0.0, 0.0],
+        [6.0, 0.0, 0.0],
+        [7.0, 0.0, 0.0],
+        [8.0, 0.0, 0.0],
+    ], dtype=np.float32)
     moved = fixed.copy()
-    moved[4, 0] += 0.2
-    processed_scans = [fixed, moved]
+    moved[[4, 5], 0] += 0.2
+    processed_scans = [fixed, moved, moved]
     process_index = 0
 
     def process_scan(*_args, **_kwargs):
@@ -303,6 +314,14 @@ def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypat
         }
 
     monkeypatch.setattr(warp_points, "process_laser_scan", process_scan)
+    match_input_counts: list[int] = []
+    original_correlative_match = slam_runtime.correlative_match
+
+    def record_correlative_match(points, *args, **kwargs):
+        match_input_counts.append(len(points))
+        return original_correlative_match(points, *args, **kwargs)
+
+    monkeypatch.setattr(slam_runtime, "correlative_match", record_correlative_match)
     stage = _NODE_REGISTRY["WarpDynamicOccupancy"]({
         "enabled": True,
         "stable_radius_m": 0.05,
@@ -315,10 +334,10 @@ def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypat
     def read_scan(_source_value):
         nonlocal reader_count
         reader_count += 1
-        sample_index = min(reader_count, 2)
+        sample_index = min(reader_count, 3)
         message = _message(1)
         message["message"]["header"]["stamp"]["nanosec"] = (
-            100_000_000 if sample_index == 2 else 0
+            (sample_index - 1) * 100_000_000
         )
         return {
             "messages": [message],
@@ -344,7 +363,7 @@ def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypat
     started = slam_runtime.slam_status("dynamic-occupancy")
     for _ in range(50):
         dynamic = started.get("scene", {}).get("dynamic_occupancy", {})
-        if dynamic.get("state") == "ready":
+        if dynamic.get("state") == "ready" and started.get("status", {}).get("received", 0) >= 3:
             break
         time.sleep(0.02)
         started = slam_runtime.slam_status("dynamic-occupancy")
@@ -352,14 +371,17 @@ def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypat
     dynamic = started["scene"]["dynamic_occupancy"]
     assert dynamic["state"] == "ready"
     assert dynamic["backend"] == "warp-hash-grid"
-    assert dynamic["dynamic_points"] == 1
-    assert len(started["scene"]["dynamic_points"]) == 1
-    assert len(started["scene"]["dynamic_velocities"]) == 1
+    assert dynamic["dynamic_points"] == 2
+    assert len(started["scene"]["dynamic_points"]) == 2
+    assert len(started["scene"]["dynamic_velocities"]) == 2
     assert "_dynamic_mask" not in dynamic
     assert "_static_mask" not in dynamic
+    assert "_motion_mask" not in dynamic
     assert started["scene"]["dynamic_points"][0][0] == pytest.approx(4.2)
-    assert len(started["scene"]["current_points"]) == 9
+    assert len(started["scene"]["current_points"]) == 8
     assert started["scene"]["occupancy"]["rays"] == 10
+    assert match_input_counts
+    assert match_input_counts[-1] == 8
     slam_runtime.stop_slam()
 
 

@@ -78,6 +78,45 @@ if wp is not None:
         matched_flags[point_index] = matched
 
 
+    @wp.kernel
+    def _filter_coherent_motion_kernel(
+        current: wp.array(dtype=wp.vec3),
+        velocities: wp.array(dtype=wp.vec3),
+        dynamic_flags: wp.array(dtype=wp.int32),
+        matched_flags: wp.array(dtype=wp.int32),
+        point_count: wp.int32,
+        support_radius: wp.float32,
+        minimum_speed: wp.float32,
+        coherent_flags: wp.array(dtype=wp.int32),
+    ):
+        """Keep locally supported motion and reject isolated edge flicker."""
+        point_index = wp.tid()
+        coherent = wp.int32(0)
+        if matched_flags[point_index] != 0 and dynamic_flags[point_index] != 0:
+            point = current[point_index]
+            velocity = velocities[point_index]
+            speed = wp.length(velocity)
+            direction_speed = wp.max(wp.float32(0.01), minimum_speed * wp.float32(0.5))
+            support = wp.int32(0)
+            for neighbor_slot in range(7):
+                neighbor_index = point_index + neighbor_slot - 3
+                if neighbor_index >= 0 and neighbor_index < point_count:
+                    if matched_flags[neighbor_index] != 0 and dynamic_flags[neighbor_index] != 0:
+                        neighbor_delta = current[neighbor_index] - point
+                        if wp.length(neighbor_delta) <= support_radius:
+                            neighbor_velocity = velocities[neighbor_index]
+                            neighbor_speed = wp.length(neighbor_velocity)
+                            if neighbor_index == point_index:
+                                support = support + 1
+                            elif speed >= direction_speed and neighbor_speed >= direction_speed:
+                                direction_dot = wp.dot(velocity, neighbor_velocity)
+                                if direction_dot >= speed * neighbor_speed * wp.float32(0.25):
+                                    support = support + 1
+            if support >= 2:
+                coherent = wp.int32(1)
+        coherent_flags[point_index] = coherent
+
+
 def classify_motion_cpu(
     previous: Any,
     current: Any,
@@ -202,6 +241,7 @@ class WarpDynamicOccupancyTracker:
         scores_wp = wp.zeros(len(values), dtype=wp.float32, device=self.device)
         flags_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
         matched_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
+        coherent_wp = wp.zeros(len(values), dtype=wp.int32, device=self.device)
         started = time.perf_counter()
         grid.build(previous_wp, tracking_radius)
         wp.launch(
@@ -222,11 +262,28 @@ class WarpDynamicOccupancyTracker:
             ],
             device=self.device,
         )
+        support_radius = min(tracking_radius, max(0.08, stable_radius * 3.0))
+        wp.launch(
+            _filter_coherent_motion_kernel,
+            dim=len(values),
+            inputs=[
+                current_wp,
+                velocities_wp,
+                flags_wp,
+                matched_wp,
+                len(values),
+                support_radius,
+                minimum_speed,
+                coherent_wp,
+            ],
+            device=self.device,
+        )
         wp.synchronize_device(self.device)
         velocities = velocities_wp.numpy()
         scores = scores_wp.numpy()
         flags = flags_wp.numpy().astype(bool, copy=False)
         matched = matched_wp.numpy().astype(bool, copy=False)
+        coherent = coherent_wp.numpy().astype(bool, copy=False)
         pipeline_ms = (time.perf_counter() - started) * 1000.0
 
         if dt_s >= reference_interval_s:
@@ -252,8 +309,10 @@ class WarpDynamicOccupancyTracker:
                 float(np.max(np.abs(flags.astype(np.int32) - cpu_flags))) if len(values) else 0.0,
             )
 
-        dynamic_indices = np.flatnonzero(flags)
+        dynamic_indices = np.flatnonzero(coherent)
         static_flags = matched & ~flags
+        motion_candidates = matched & flags
+        transient_flags = ~matched
         display_capacity = max(16, min(4_000, int(display_points)))
         if len(dynamic_indices) > display_capacity:
             selection = np.linspace(0, len(dynamic_indices) - 1, display_capacity, dtype=np.int32)
@@ -268,6 +327,9 @@ class WarpDynamicOccupancyTracker:
             "input_points": int(len(values)),
             "reference_points": int(len(previous)),
             "dynamic_points": int(len(dynamic_indices)),
+            "motion_candidates": int(np.count_nonzero(motion_candidates)),
+            "transient_points": int(np.count_nonzero(transient_flags)),
+            "rejected_motion_points": int(np.count_nonzero(motion_candidates & ~coherent)),
             "display_points": int(len(display_indices)),
             "pipeline_ms": float(pipeline_ms),
             "cpu_ms": float(cpu_ms),
@@ -278,6 +340,7 @@ class WarpDynamicOccupancyTracker:
             "reference_interval_s": float(reference_interval_s),
             "stable_radius_m": stable_radius,
             "tracking_radius_m": tracking_radius,
+            "support_radius_m": float(support_radius),
             "minimum_speed_mps": minimum_speed,
             "mean_speed_mps": float(np.mean(speed)) if len(speed) else 0.0,
             "max_speed_mps": float(np.max(speed)) if len(speed) else 0.0,
@@ -285,6 +348,7 @@ class WarpDynamicOccupancyTracker:
             "revision": int(self.revision),
             "_dynamic_mask": flags,
             "_static_mask": static_flags,
+            "_motion_mask": coherent,
             "points": values[display_indices].astype(float).tolist(),
             "velocities": velocities[display_indices].astype(float).tolist(),
             "scores": scores[display_indices].astype(float).tolist(),
@@ -304,6 +368,9 @@ class WarpDynamicOccupancyTracker:
             "input_points": int(point_count),
             "reference_points": 0,
             "dynamic_points": 0,
+            "motion_candidates": 0,
+            "transient_points": 0,
+            "rejected_motion_points": 0,
             "display_points": 0,
             "pipeline_ms": 0.0,
             "cpu_ms": 0.0,
@@ -316,6 +383,7 @@ class WarpDynamicOccupancyTracker:
             "revision": int(self.revision),
             "_dynamic_mask": np.zeros(point_count, dtype=bool),
             "_static_mask": np.zeros(point_count, dtype=bool),
+            "_motion_mask": np.zeros(point_count, dtype=bool),
             "points": [],
             "velocities": [],
             "scores": [],
