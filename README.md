@@ -28,6 +28,10 @@ retains the editor controls, camera behavior, colors, robot marker, live sweep,
 floor fill, walls, and runtime metrics. `Ctrl+C` stops SLAM and the two ROS 2
 subscriptions cleanly.
 
+The standalone application enables Warp trajectory evaluation by default.
+Hold **Shift** and left-click the map to place a fixed map-frame goal; the live
+session immediately rescores its candidate paths without restarting SLAM.
+
 Useful options:
 
 ```bash
@@ -94,8 +98,10 @@ managed session scores thousands of bounded differential-drive arcs against
 the fixed occupancy map and predicted coherent motion. The viewer draws unsafe
 paths red, safe paths green, the highest-scoring safe candidate cyan, and
 reports trajectories × future steps plus synchronized Warp pipeline time. The
-stage never arms or commands the robot. Open **ROS2 Warp Navigation Lab** for
-the complete wiring.
+stage never arms or commands the robot. In the embedded SLAM viewer, hold
+**Shift** and left-click to update the connected evaluator's `goal_x_m` and
+`goal_y_m` values and rescore the running session directly. Open **ROS2 Warp
+Navigation Lab** for the complete wiring.
 
 ## Included workflows
 

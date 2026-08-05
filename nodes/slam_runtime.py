@@ -1817,6 +1817,54 @@ def set_mapping(slam_id: str, enabled: bool) -> dict[str, Any]:
         return outputs
 
 
+def set_trajectory_goal(slam_id: str, goal_x_m: float, goal_y_m: float) -> dict[str, Any]:
+    """Update the fixed map-frame goal and rescore paths without restarting SLAM."""
+    clean_id = _safe_id(slam_id)
+    goal_x = float(goal_x_m)
+    goal_y = float(goal_y_m)
+    if not math.isfinite(goal_x) or not math.isfinite(goal_y):
+        raise ValueError("trajectory goal coordinates must be finite")
+    with _LOCK:
+        session = _SESSIONS.get(clean_id)
+    if session is None:
+        return slam_status(clean_id)
+    with session["session_lock"]:
+        stage = session.get("trajectory_evaluation")
+        if not isinstance(stage, dict) or not bool(stage.get("enabled")):
+            raise ValueError(
+                "SLAM has no enabled WarpTrajectoryEvaluator stage; connect "
+                "WarpTrajectoryEvaluator.stage to SLAM.trajectory_evaluation"
+            )
+        stage["goal_x_m"] = goal_x
+        stage["goal_y_m"] = goal_y
+        pose_value = session.get("pose")
+        pose = np.asarray(
+            pose_value if pose_value is not None else [0.0, 0.0, 0.0],
+            dtype=np.float64,
+        )
+        _evaluate_trajectory_candidates(session, pose)
+        result = session.get("trajectory_result") if isinstance(session.get("trajectory_result"), dict) else {}
+        summary = {
+            key: value
+            for key, value in result.items()
+            if key not in {"paths", "path_scores", "path_safe"}
+        }
+        scene = dict(session.get("scene") or {})
+        scene.update(
+            trajectory_paths=result.get("paths") or [],
+            trajectory_scores=result.get("path_scores") or [],
+            trajectory_safe=result.get("path_safe") or [],
+            trajectory_best_index=int(result.get("best_display_index") or 0),
+            trajectory_goal=result.get("goal") or [goal_x, goal_y, 0.0],
+            trajectory_evaluation=summary,
+        )
+        session["scene"] = scene
+        session["report"] = f"Trajectory goal set to ({goal_x:.2f}, {goal_y:.2f}) m in the fixed map frame"
+        outputs = _outputs(session)
+        session["snapshot"] = outputs
+        return outputs
+
+
 def stop_slam(slam_id: str = "") -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
     with _LOCK:
