@@ -501,12 +501,18 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
     component="spatial-processing",
     category=_CATEGORY,
     description=(
-        "Render a managed message stream as a live Warp point cloud inside the "
-        "editor or in a native OpenGL window on the machine running the graph."
+        "Render a managed LaserScan or calibrated metric-depth stream as a live "
+        "Warp point cloud inside the editor, with native device viewing for scans."
     ),
     inputs={
         "action": Enum(["status", "start", "clear", "pause", "resume", "stop"], default="status"),
         "source": Dict,
+        "lidar_source": Dict,
+        "color_source": Dict,
+        "depth_projection": Dict,
+        "tsdf_integration": Dict,
+        "surface_extraction": Dict,
+        "sensor_fusion": Dict,
         "pose": Dict,
         "pose_static": Dict,
         "pose_parent_frame": Text(default="odom"),
@@ -538,7 +544,7 @@ def warp_laser_scan_filter(ctx: dict) -> dict:
         "viewer": Dict,
         "report": Text,
     },
-    primary_inputs=["source", "pose", "action", "mode"],
+    primary_inputs=["source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "action", "mode"],
     primary_outputs=["scene", "status", "report"],
     live=True,
 )
@@ -579,6 +585,61 @@ def viewer(ctx: dict) -> dict:
             "report": "Viewer action must be status, start, clear, pause, resume, or stop",
         }
     source = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
+    depth_projection = (
+        ctx.get("depth_projection")
+        if isinstance(ctx.get("depth_projection"), dict)
+        else {}
+    )
+    color_source = ctx.get("color_source") if isinstance(ctx.get("color_source"), dict) else {}
+    lidar_source = ctx.get("lidar_source") if isinstance(ctx.get("lidar_source"), dict) else {}
+    tsdf_integration = ctx.get("tsdf_integration") if isinstance(ctx.get("tsdf_integration"), dict) else {}
+    surface_extraction = ctx.get("surface_extraction") if isinstance(ctx.get("surface_extraction"), dict) else {}
+    sensor_fusion = ctx.get("sensor_fusion") if isinstance(ctx.get("sensor_fusion"), dict) else {}
+    if source.get("kind") == "blacknode.depth-stream" and depth_projection.get("kind") != "blacknode.warp-depth-projector":
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "status": {"state": "error", "error": "depth_projection must be a WarpDepthProjector stage"},
+            "viewer": {},
+            "report": "Connect WarpDepthProjector.stage to Viewer.depth_projection",
+        }
+    if color_source and color_source.get("kind") != "blacknode.frame-stream":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "color_source must be a blacknode.frame-stream"},
+            "viewer": {}, "report": "Connect Camera.frame_stream to Viewer.color_source",
+        }
+    if tsdf_integration and tsdf_integration.get("kind") != "blacknode.warp-tsdf-integration":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "tsdf_integration must be a WarpTSDFIntegration stage"},
+            "viewer": {}, "report": "Connect WarpTSDFIntegration.stage to Viewer.tsdf_integration",
+        }
+    if (
+        tsdf_integration
+        and tsdf_integration.get("enabled", True)
+        and surface_extraction.get("kind") != "blacknode.warp-surface-extraction"
+    ):
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "surface_extraction is required for TSDF reconstruction"},
+            "viewer": {}, "report": "Connect WarpSurfaceExtraction.stage to Viewer.surface_extraction",
+        }
+    if sensor_fusion and sensor_fusion.get("kind") != "blacknode.warp-sensor-fusion":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "sensor_fusion must be a WarpSensorFusion stage"},
+            "viewer": {}, "report": "Connect WarpSensorFusion.stage to Viewer.sensor_fusion",
+        }
+    if sensor_fusion and sensor_fusion.get("enabled", True) and lidar_source.get("kind") not in {
+        "blacknode.message-stream", "blacknode.laser-scan-stream",
+    }:
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "lidar_source is required for sensor fusion"},
+            "viewer": {}, "report": "Connect LiDAR.laser_scan or ROS2.stream to Viewer.lidar_source",
+        }
     pose_source = ctx.get("pose") if isinstance(ctx.get("pose"), dict) else {}
     pose_static_source = ctx.get("pose_static") if isinstance(ctx.get("pose_static"), dict) else {}
     source_reader = ctx.get("__message_stream_reader__")
@@ -586,6 +647,12 @@ def viewer(ctx: dict) -> dict:
         viewer_id=viewer_id,
         node_id=str(ctx.get("__node_id__") or ""),
         source=source,
+        lidar_source=lidar_source,
+        color_source=color_source,
+        depth_projection=depth_projection,
+        tsdf_integration=tsdf_integration,
+        surface_extraction=surface_extraction,
+        sensor_fusion=sensor_fusion,
         pose_source=pose_source,
         pose_static_source=pose_static_source,
         mode=str(ctx.get("mode") or "editor"),

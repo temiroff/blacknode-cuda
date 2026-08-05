@@ -60,7 +60,7 @@ npm run build:slam-viewer
 | `capability` | On | `GPUCapability`, `GPURequirement` |
 | `image-processing` | On | `CUDAImageFilter`, `CUDAImageFilterStream` |
 | `tensor-operations` | On | `TensorCoreGEMM`, `CUTLASS` |
-| `spatial-processing` | On | `Viewer`, `SLAM`, `WarpParticleLocalization`, `WarpDynamicOccupancy`, `WarpLaserScanFilter` |
+| `spatial-processing` | On | `Viewer`, `SLAM`, `WarpParticleLocalization`, `WarpDynamicOccupancy`, `WarpDepthProjector`, `WarpTSDFIntegration`, `WarpSurfaceExtraction`, `WarpSensorFusion`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
 `CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and optional pose streams, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry` and `PoseStamped` messages register scan history directly. A `TFMessage` stream can chain `pose_parent_frame` to `pose_child_frame`; `auto` targets the LaserScan frame. Connect `/tf_static` through a second generic ROS2 stream with `qos=transient_local` when fixed links are separate. The view provides 3D orbit controls, a counterclockwise ray sweep, reported angular coverage, bounded history, and an accumulation toggle; Off freezes the registered world cloud while the latest sweep remains visible on top. LaserScan geometry remains planar. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
@@ -106,6 +106,37 @@ stage never arms or commands the robot. In the embedded SLAM viewer, hold
 `goal_y_m` values and rescore the running session directly. Open **ROS2 Warp
 Navigation Lab** for the complete wiring.
 
+`WarpDepthProjector` is a graph-visible metric-depth stage for `Viewer`.
+Connect a provider-neutral `blacknode.depth-stream` to `Viewer.source` and the
+stage to `Viewer.depth_projection`. The managed viewer fetches compact binary
+frames from live providers, validates depth, deprojects calibrated pixels,
+applies the configured sensor extrinsics, estimates surface normals and
+confidence, and renders the current 3D surface in the selected target frame.
+Dense depth pixels remain outside workflow JSON. Worker presence and frame
+freshness are reported separately; stale binary frames stop live presentation.
+Open **ROS2 Warp Depth Cloud** for the complete wiring.
+
+`WarpTSDFIntegration` and `WarpSurfaceExtraction` extend that same managed
+viewer into persistent RGB-D reconstruction. Each fresh calibrated depth frame
+is aligned with the latest RGB snapshot, registered by synchronized odometry,
+integrated into a bounded device-resident TSDF volume, and extracted as a
+compact colored surface scene. Duplicate frames do not reintegrate. The viewer
+reports integration samples, observed and surface voxels, RGB registration,
+pose registration, and synchronized Warp timing. **Clear volume** resets the
+persistent volume and pauses integration; **Accumulate** resumes it. Open
+**Warp TSDF Reconstruction Lab** for hardware-free verification or **ROS2 Warp
+RGB-D Reconstruction** for the live sensor graph.
+
+`WarpSensorFusion` combines the current LiDAR scan and projected metric-depth
+surface in the shared 3D viewer, with the latest aligned RGB coloring the depth
+geometry. A bounded Warp `HashGrid` search evaluates small translation and yaw
+calibration hypotheses, then publishes matched and unmatched geometry,
+residual heat colors, confidence, frame synchronization error, and the selected
+extrinsic correction. The managed viewer keeps dense sensor frames outside
+workflow JSON and rejects pairs outside the configured synchronization window.
+Open **Warp Sensor Fusion Lab** for hardware-free verification or **ROS2 Warp
+Sensor Fusion** for aligned camera, `/scan`, and `/odom` streams.
+
 ## Included workflows
 
 - GPU image filtering and live filter streaming
@@ -119,10 +150,15 @@ Navigation Lab** for the complete wiring.
   stage into live `SLAM`
 - ROS 2 scan and odometry streams through visible `WarpDynamicOccupancy` and
   `WarpTrajectoryEvaluator` stages into live `SLAM`
+- ROS 2 metric depth through `WarpDepthProjector` into the shared live `Viewer`
+- ROS 2 depth, aligned RGB, and odometry through persistent Warp TSDF
+  integration and surface extraction into the shared live `Viewer`
+- LiDAR, metric depth, aligned RGB, and pose through `WarpSensorFusion` into a
+  color-separated shared 3D alignment view
 
 See [Warp Sensor Compute Roadmap](SENSOR_GPU_ROADMAP.md) for the delivered
 localization and dynamic-occupancy stages plus trajectory evaluation, live
-depth projection, RGB-D reconstruction, and LiDAR/camera fusion phases.
+depth projection, RGB-D reconstruction, and LiDAR/depth/RGB fusion.
 
 Select `cpu` for portable Warp verification or `cuda:0` for GPU execution. Enable `compare_numpy` when a warmed correctness and timing comparison is needed. Benchmarks report the device, data shape/type, warmup conditions, synchronized timing, and correctness result.
 

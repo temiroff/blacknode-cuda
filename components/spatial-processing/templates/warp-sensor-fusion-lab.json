@@ -1,0 +1,98 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Warp Sensor Fusion Lab",
+  "saved_at": "2026-08-05T00:00:00",
+  "entrypoint": {"node_id": "viewer", "port": "scene"},
+  "metadata": {
+    "template": true,
+    "description": "Run hardware-free LiDAR and metric-depth providers through Warp HashGrid alignment, bounded extrinsic-calibration hypotheses, confidence coloring, and the shared 3D fusion Viewer.",
+    "color": "#76b900",
+    "required_packages": ["blacknode-perception", "blacknode-cuda"],
+    "required_components": ["blacknode-perception/lidar", "blacknode-perception/depth", "blacknode-cuda/spatial-processing"]
+  },
+  "node_meta": {
+    "lidar_test": {
+      "id": "lidar_test", "type": "LiDARTestProvider", "pos": [40, 80],
+      "params": {"mode": "mock", "provider_id": "fusion_lidar", "hardware_id": "lidar-test-001", "frame_id": "base_link", "sample_count": 360, "room_width_m": 2.4, "room_height_m": 4.0},
+      "inputs": ["mode", "provider_id", "hardware_id", "frame_id", "sample_count", "room_width_m", "room_height_m", "replay"],
+      "outputs": ["provider_state", "laser_scan", "health", "hardware", "report"],
+      "input_types": {"mode": "Text", "provider_id": "Text", "hardware_id": "Text", "frame_id": "Text", "sample_count": "Int", "room_width_m": "Float", "room_height_m": "Float", "replay": "Dict"},
+      "output_types": {"provider_state": "Dict", "laser_scan": "Dict", "health": "Dict", "hardware": "Dict", "report": "Text"},
+      "input_defaults": {"mode": "mock", "provider_id": "lidar_test", "hardware_id": "lidar-test-001", "frame_id": "laser", "sample_count": 360, "room_width_m": 6.0, "room_height_m": 4.0},
+      "input_choices": {"mode": ["mock", "replay"]}
+    },
+    "lidar": {
+      "id": "lidar", "type": "LiDAR", "pos": [390, 80],
+      "params": {"attachment_id": "front_lidar", "topic": "/scan", "frame_id": "base_link", "stale_after_seconds": 1.0},
+      "inputs": ["provider_state", "laser_scan", "health", "hardware", "attachment_id", "topic", "frame_id", "stale_after_seconds"],
+      "outputs": ["ready", "lidar", "laser_scan", "health", "hardware", "attachment_configuration", "report"],
+      "input_types": {"provider_state": "Dict", "laser_scan": "Dict", "health": "Dict", "hardware": "Dict", "attachment_id": "Text", "topic": "Text", "frame_id": "Text", "stale_after_seconds": "Float"},
+      "output_types": {"ready": "Bool", "lidar": "Dict", "laser_scan": "Dict", "health": "Dict", "hardware": "Dict", "attachment_configuration": "Dict", "report": "Text"},
+      "input_defaults": {"attachment_id": "front_lidar", "topic": "/scan", "frame_id": "laser", "stale_after_seconds": 1.0}
+    },
+    "depth_test": {
+      "id": "depth_test", "type": "DepthCameraTestProvider", "pos": [40, 390],
+      "params": {"mode": "mock", "provider_id": "fusion_depth", "hardware_id": "depth-camera-test-001", "frame_id": "front_depth_frame", "distance_m": 1.2, "samples_m": []},
+      "inputs": ["mode", "provider_id", "hardware_id", "frame_id", "distance_m", "samples_m", "replay"],
+      "outputs": ["preview", "provider_state", "depth_stream", "point_cloud_stream", "health", "hardware", "report"],
+      "input_types": {"mode": "Text", "provider_id": "Text", "hardware_id": "Text", "frame_id": "Text", "distance_m": "Float", "samples_m": "List", "replay": "Dict"},
+      "output_types": {"preview": "Image", "provider_state": "Dict", "depth_stream": "Dict", "point_cloud_stream": "Dict", "health": "Dict", "hardware": "Dict", "report": "Text"},
+      "input_defaults": {"mode": "mock", "provider_id": "depth_test", "hardware_id": "depth-camera-test-001", "frame_id": "camera_depth", "distance_m": 1.2, "samples_m": []},
+      "input_choices": {"mode": ["mock", "replay"]}
+    },
+    "depth_camera": {
+      "id": "depth_camera", "type": "DepthCamera", "pos": [390, 390],
+      "params": {"attachment_id": "front_depth_camera", "depth_topic": "/camera/depth/image_raw", "camera_info_topic": "/camera/depth/camera_info", "points_topic": "", "frame_id": "front_depth_frame", "stale_after_seconds": 2.0},
+      "inputs": ["preview", "provider_state", "depth_stream", "point_cloud_stream", "health", "hardware", "attachment_id", "depth_topic", "camera_info_topic", "points_topic", "frame_id", "stale_after_seconds"],
+      "outputs": ["preview", "ready", "depth_camera", "depth_stream", "point_cloud_stream", "health", "hardware", "attachment_configuration", "report"],
+      "input_types": {"preview": "Image", "provider_state": "Dict", "depth_stream": "Dict", "point_cloud_stream": "Dict", "health": "Dict", "hardware": "Dict", "attachment_id": "Text", "depth_topic": "Text", "camera_info_topic": "Text", "points_topic": "Text", "frame_id": "Text", "stale_after_seconds": "Float"},
+      "output_types": {"preview": "Image", "ready": "Bool", "depth_camera": "Dict", "depth_stream": "Dict", "point_cloud_stream": "Dict", "health": "Dict", "hardware": "Dict", "attachment_configuration": "Dict", "report": "Text"},
+      "input_defaults": {"attachment_id": "front_depth_camera", "depth_topic": "/camera/depth/image_raw", "camera_info_topic": "/camera/depth/camera_info", "points_topic": "", "frame_id": "camera_depth", "stale_after_seconds": 2.0}
+    },
+    "projector": {
+      "id": "projector", "type": "WarpDepthProjector", "pos": [720, 390],
+      "params": {"enabled": true, "minimum_depth_m": 0.1, "maximum_depth_m": 4.0, "downsample_stride": 1, "maximum_points": 50000, "stale_after_seconds": 2.0, "target_frame": "base_link", "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_z_m": 0.0, "sensor_roll_rad": 0.0, "sensor_pitch_rad": 0.0, "sensor_yaw_rad": 0.0, "compare_cpu": false},
+      "inputs": ["enabled", "minimum_depth_m", "maximum_depth_m", "downsample_stride", "maximum_points", "stale_after_seconds", "target_frame", "sensor_x_m", "sensor_y_m", "sensor_z_m", "sensor_roll_rad", "sensor_pitch_rad", "sensor_yaw_rad", "compare_cpu"],
+      "outputs": ["stage", "enabled", "workload", "report"],
+      "input_types": {"enabled": "Bool", "minimum_depth_m": "Float", "maximum_depth_m": "Float", "downsample_stride": "Int", "maximum_points": "Int", "stale_after_seconds": "Float", "target_frame": "Text", "sensor_x_m": "Float", "sensor_y_m": "Float", "sensor_z_m": "Float", "sensor_roll_rad": "Float", "sensor_pitch_rad": "Float", "sensor_yaw_rad": "Float", "compare_cpu": "Bool"},
+      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
+      "input_defaults": {"enabled": true, "minimum_depth_m": 0.1, "maximum_depth_m": 8.0, "downsample_stride": 2, "maximum_points": 50000, "stale_after_seconds": 2.0, "target_frame": "base_link", "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_z_m": 0.0, "sensor_roll_rad": 0.0, "sensor_pitch_rad": 0.0, "sensor_yaw_rad": 0.0, "compare_cpu": false}
+    },
+    "fusion": {
+      "id": "fusion", "type": "WarpSensorFusion", "pos": [720, 670],
+      "params": {"enabled": true, "require_pose": false, "synchronization_tolerance_s": 0.1, "maximum_alignment_distance_m": 1.0, "minimum_depth_confidence": 0.1, "maximum_points": 60000, "calibration_search": true, "calibration_translation_m": 0.2, "calibration_yaw_deg": 5.0, "calibration_steps": 3, "compare_cpu": false},
+      "inputs": ["enabled", "require_pose", "synchronization_tolerance_s", "maximum_alignment_distance_m", "minimum_depth_confidence", "maximum_points", "calibration_search", "calibration_translation_m", "calibration_yaw_deg", "calibration_steps", "compare_cpu"],
+      "outputs": ["stage", "enabled", "workload", "report"],
+      "input_types": {"enabled": "Bool", "require_pose": "Bool", "synchronization_tolerance_s": "Float", "maximum_alignment_distance_m": "Float", "minimum_depth_confidence": "Float", "maximum_points": "Int", "calibration_search": "Bool", "calibration_translation_m": "Float", "calibration_yaw_deg": "Float", "calibration_steps": "Int", "compare_cpu": "Bool"},
+      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
+      "input_defaults": {"enabled": true, "require_pose": true, "synchronization_tolerance_s": 0.1, "maximum_alignment_distance_m": 0.35, "minimum_depth_confidence": 0.1, "maximum_points": 60000, "calibration_search": true, "calibration_translation_m": 0.1, "calibration_yaw_deg": 3.0, "calibration_steps": 3, "compare_cpu": false}
+    },
+    "viewer": {
+      "id": "viewer", "type": "Viewer", "pos": [1080, 100],
+      "params": {"action": "start", "pose_parent_frame": "odom", "pose_child_frame": "base_link", "viewer_id": "warp_sensor_fusion_lab", "mode": "editor", "processor": "warp", "device": "cpu", "filter_min_m": 0.05, "filter_max_m": 8.0, "downsample_stride": 2, "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_yaw_rad": 0.0, "point_radius_m": 0.02, "fps": 30, "animate_scan": false, "show_rays": false, "accumulate_hits": false, "max_accumulated_points": 60000, "pulse_hz": 1.0, "pose_sync_tolerance_s": 0.25},
+      "inputs": ["action", "source", "lidar_source", "color_source", "depth_projection", "tsdf_integration", "surface_extraction", "sensor_fusion", "pose", "pose_static", "pose_parent_frame", "pose_child_frame", "viewer_id", "mode", "processor", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "point_radius_m", "fps", "animate_scan", "show_rays", "accumulate_hits", "max_accumulated_points", "pulse_hz", "pose_sync_tolerance_s"],
+      "outputs": ["running", "live", "scene", "status", "viewer", "report"],
+      "input_types": {"action": "Text", "source": "Dict", "lidar_source": "Dict", "color_source": "Dict", "depth_projection": "Dict", "tsdf_integration": "Dict", "surface_extraction": "Dict", "sensor_fusion": "Dict", "pose": "Dict", "pose_static": "Dict", "pose_parent_frame": "Text", "pose_child_frame": "Text", "viewer_id": "Text", "mode": "Text", "processor": "Text", "device": "Text", "filter_min_m": "Float", "filter_max_m": "Float", "downsample_stride": "Int", "sensor_x_m": "Float", "sensor_y_m": "Float", "sensor_yaw_rad": "Float", "point_radius_m": "Float", "fps": "Int", "animate_scan": "Bool", "show_rays": "Bool", "accumulate_hits": "Bool", "max_accumulated_points": "Int", "pulse_hz": "Float", "pose_sync_tolerance_s": "Float"},
+      "output_types": {"running": "Bool", "live": "Bool", "scene": "Dict", "status": "Dict", "viewer": "Dict", "report": "Text"},
+      "input_defaults": {"action": "status", "pose_parent_frame": "odom", "pose_child_frame": "auto", "viewer_id": "viewer", "mode": "editor", "processor": "warp", "device": "cuda:0", "filter_min_m": 0.1, "filter_max_m": 12.0, "downsample_stride": 1, "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_yaw_rad": 0.0, "point_radius_m": 0.025, "fps": 30, "animate_scan": true, "show_rays": true, "accumulate_hits": true, "max_accumulated_points": 50000, "pulse_hz": 1.0, "pose_sync_tolerance_s": 0.25},
+      "input_choices": {"action": ["status", "start", "clear", "pause", "resume", "stop"], "mode": ["editor", "device"], "processor": ["warp"], "device": ["cuda:0", "cpu"]}
+    }
+  },
+  "edges": [
+    {"from": "lidar_test", "from_port": "provider_state", "to": "lidar", "to_port": "provider_state"},
+    {"from": "lidar_test", "from_port": "laser_scan", "to": "lidar", "to_port": "laser_scan"},
+    {"from": "lidar_test", "from_port": "health", "to": "lidar", "to_port": "health"},
+    {"from": "lidar_test", "from_port": "hardware", "to": "lidar", "to_port": "hardware"},
+    {"from": "depth_test", "from_port": "preview", "to": "depth_camera", "to_port": "preview"},
+    {"from": "depth_test", "from_port": "provider_state", "to": "depth_camera", "to_port": "provider_state"},
+    {"from": "depth_test", "from_port": "depth_stream", "to": "depth_camera", "to_port": "depth_stream"},
+    {"from": "depth_test", "from_port": "point_cloud_stream", "to": "depth_camera", "to_port": "point_cloud_stream"},
+    {"from": "depth_test", "from_port": "health", "to": "depth_camera", "to_port": "health"},
+    {"from": "depth_test", "from_port": "hardware", "to": "depth_camera", "to_port": "hardware"},
+    {"from": "depth_camera", "from_port": "depth_stream", "to": "viewer", "to_port": "source"},
+    {"from": "lidar", "from_port": "laser_scan", "to": "viewer", "to_port": "lidar_source"},
+    {"from": "projector", "from_port": "stage", "to": "viewer", "to_port": "depth_projection"},
+    {"from": "fusion", "from_port": "stage", "to": "viewer", "to_port": "sensor_fusion"}
+  ]
+}

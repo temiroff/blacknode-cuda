@@ -465,7 +465,628 @@ def _append_scan_history(
     return history_points, history_colors, int(session["accumulated_scan_count"])
 
 
+def _read_fusion_scan(session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str]:
+    source = session.get("lidar_source") if isinstance(session.get("lidar_source"), dict) else {}
+    if source.get("kind") == "blacknode.laser-scan-stream":
+        marker = int(source.get("source_time_ns") or source.get("receive_time_ns") or 0)
+        outputs = {
+            "status": {"state": "ready", "source_fresh": True, "error": ""},
+            "received": marker,
+        }
+        return dict(source), outputs, ""
+    reader = session.get("source_reader")
+    if not callable(reader):
+        reader = _local_stream_reader
+    try:
+        outputs = reader(dict(source))
+    except Exception as exc:
+        return {}, {}, f"LiDAR stream read failed ({type(exc).__name__}: {exc})"
+    if not isinstance(outputs, dict):
+        return {}, {}, "LiDAR stream returned invalid data"
+    status = outputs.get("status") if isinstance(outputs.get("status"), dict) else {}
+    if not status.get("source_fresh"):
+        return {}, outputs, str(status.get("error") or "LiDAR stream is not fresh")
+    scan = _normalize_laser_scan(outputs, source)
+    return scan, outputs, "" if scan else "LiDAR stream has no supported LaserScan message"
+
+
+def _read_fusion_pose(
+    session: dict[str, Any],
+    *,
+    source_time_ns: int,
+    target_frame: str,
+    required: bool,
+) -> tuple[dict[str, Any], str]:
+    pose_source = session.get("pose_source") if isinstance(session.get("pose_source"), dict) else {}
+    if not pose_source:
+        if required:
+            return {}, "Sensor fusion is waiting for a synchronized pose"
+        return {
+            "x_m": 0.0, "y_m": 0.0, "z_m": 0.0, "yaw_rad": 0.0,
+            "frame": target_frame or "base_link", "child_frame": target_frame or "base_link",
+            "message_type": "static-identity", "source_time_ns": source_time_ns,
+            "time_delta_seconds": 0.0,
+        }, ""
+    reader = session.get("source_reader")
+    if not callable(reader):
+        reader = _local_stream_reader
+    try:
+        pose_outputs = reader(dict(pose_source))
+    except Exception as exc:
+        return {}, f"Pose stream read failed ({type(exc).__name__}: {exc})"
+    if not isinstance(pose_outputs, dict):
+        return {}, "Pose stream returned invalid data"
+    pose_status = pose_outputs.get("status") if isinstance(pose_outputs.get("status"), dict) else {}
+    if not pose_status.get("source_fresh"):
+        return {}, str(pose_status.get("error") or "Pose stream is not fresh")
+    pose_static_source = (
+        session.get("pose_static_source")
+        if isinstance(session.get("pose_static_source"), dict)
+        else {}
+    )
+    if pose_static_source:
+        try:
+            static_outputs = reader(dict(pose_static_source))
+        except Exception:
+            static_outputs = {}
+        if isinstance(static_outputs, dict):
+            pose_outputs = {
+                **pose_outputs,
+                "messages": [
+                    *(pose_outputs.get("messages") or []),
+                    *(static_outputs.get("messages") or []),
+                    *([static_outputs.get("message")] if static_outputs.get("message") else []),
+                ],
+            }
+    return _normalize_pose(
+        pose_outputs,
+        pose_source,
+        source_time_ns,
+        float(session["options"].get("pose_sync_tolerance_s") or 0.25),
+        str(session["options"].get("pose_parent_frame") or "odom"),
+        str(session["options"].get("pose_child_frame") or "auto"),
+        target_frame,
+    )
+
+
+def _update_fusion_session(session: dict[str, Any]) -> None:
+    stage = session.get("sensor_fusion") if isinstance(session.get("sensor_fusion"), dict) else {}
+    if not stage.get("enabled", True):
+        _update_depth_session(session)
+        return
+    lidar_scan, lidar_outputs, lidar_error = _read_fusion_scan(session)
+    if lidar_error:
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "waiting", "source_fresh": False, "error": lidar_error,
+            },
+            report=lidar_error,
+        )
+        return
+
+    from .warp_depth import process_depth_stream
+
+    depth_processed = process_depth_stream(
+        dict(session["source"]),
+        dict(session.get("depth_projection") or {}),
+        device=session["device"],
+        color_stream=(
+            dict(session.get("color_source") or {})
+            if isinstance(session.get("color_source"), dict)
+            else None
+        ),
+    )
+    if not depth_processed.get("ok"):
+        depth_report = depth_processed.get("report") if isinstance(depth_processed.get("report"), dict) else {}
+        error = str(depth_report.get("error") or "metric depth projection failed")
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "stale" if depth_report.get("state") == "stale" else "error",
+                "source_fresh": False, "error": error,
+            },
+            report=error,
+        )
+        return
+    depth_report = depth_processed.get("report") if isinstance(depth_processed.get("report"), dict) else {}
+    depth_time_ns = int(depth_report.get("source_time_ns") or 0)
+    lidar_time_ns = int(lidar_scan.get("source_time_ns") or lidar_scan.get("receive_time_ns") or 0)
+    sync_delta_s = (
+        abs(depth_time_ns - lidar_time_ns) / 1_000_000_000.0
+        if depth_time_ns and lidar_time_ns else 0.0
+    )
+    sync_tolerance_s = max(0.001, float(stage.get("synchronization_tolerance_s") or 0.1))
+    if depth_time_ns and lidar_time_ns and sync_delta_s > sync_tolerance_s:
+        error = (
+            f"LiDAR and depth frames are {sync_delta_s:.3f}s apart; "
+            f"required ≤{sync_tolerance_s:.3f}s"
+        )
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "stale", "source_fresh": False,
+                "synchronization_delta_seconds": sync_delta_s, "error": error,
+            },
+            report=error,
+        )
+        return
+    marker = (depth_time_ns, lidar_time_ns, int(lidar_outputs.get("received") or 0))
+    if marker == session.get("source_marker") and session.get("scene"):
+        status = dict(session.get("status") or {})
+        status.update(state="ready", source_fresh=True, error="")
+        session.update(live=True, status=status)
+        return
+    if session.get("history_paused") and session.get("scene"):
+        status = dict(session.get("status") or {})
+        status.update(state="ready", source_fresh=True, history_paused=True, error="")
+        session.update(live=True, status=status, source_marker=marker)
+        return
+
+    point_cloud = depth_processed.get("point_cloud") if isinstance(depth_processed.get("point_cloud"), dict) else {}
+    pose, pose_error = _read_fusion_pose(
+        session,
+        source_time_ns=depth_time_ns,
+        target_frame=str(point_cloud.get("frame") or "base_link"),
+        required=bool(stage.get("require_pose", True)),
+    )
+    if not pose:
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "waiting", "source_fresh": True,
+                "pose_connected": bool(session.get("pose_source")), "pose_fresh": False,
+                "error": pose_error,
+            },
+            report=pose_error,
+        )
+        return
+
+    from .warp_points import process_laser_scan
+
+    options = session["options"]
+    sensor_pose = _combined_sensor_pose(options, pose)
+    lidar_processed = process_laser_scan(
+        lidar_scan,
+        device=session["device"],
+        filter_min_m=options["filter_min_m"],
+        filter_max_m=options["filter_max_m"],
+        stride=options["stride"],
+        sensor_pose=sensor_pose,
+        include_raw_points=False,
+        compare_numpy=False,
+    )
+    if not lidar_processed.get("ok"):
+        error = str(lidar_processed.get("report", {}).get("error") or "LiDAR projection failed")
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "error", "source_fresh": True, "error": error,
+            },
+            report=error,
+        )
+        return
+    from .warp_fusion import process_sensor_fusion
+
+    fused = process_sensor_fusion(
+        lidar_processed.get("filtered_points") or [],
+        point_cloud,
+        pose=pose,
+        stage=stage,
+        device=session["device"],
+    )
+    if not fused.get("ok"):
+        error = str(fused.get("report", {}).get("error") or "Warp sensor fusion failed")
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "error", "source_fresh": True, "error": error,
+            },
+            report=error,
+        )
+        return
+    fusion_report = dict(fused.get("report") or {})
+    points = list(fused.get("fused_points") or [])
+    colors = list(fused.get("fused_colors") or [])
+    display_stride = max(1, math.ceil(len(points) / _MAX_EDITOR_POINTS))
+    origin = list(fused.get("sensor_origin") or [0.0, 0.0, 0.0])
+    synchronization = {
+        "state": "ready",
+        "depth_time_ns": depth_time_ns,
+        "lidar_time_ns": lidar_time_ns,
+        "delta_seconds": sync_delta_s,
+        "tolerance_seconds": sync_tolerance_s,
+        "rgb_mode": "latest-aligned" if session.get("color_source") else "unconnected",
+    }
+    scene = {
+        "kind": "blacknode.viewer-scene", "schema_version": 1,
+        "primitive": "sensor-fusion", "projection": "xyz",
+        "frame": str(pose.get("frame") or point_cloud.get("frame") or "map"),
+        "source_frame": str(point_cloud.get("source_frame") or "camera_depth"),
+        "source_time_ns": depth_time_ns,
+        "receive_time_ns": int(point_cloud.get("receive_time_ns") or time.time_ns()),
+        "sequence": int(lidar_outputs.get("received") or depth_time_ns),
+        "sensor": {
+            "x_m": float(origin[0]), "y_m": float(origin[1]), "z_m": float(origin[2]),
+            "yaw_rad": float(pose.get("yaw_rad") or 0.0),
+        },
+        "view": {
+            "radius_m": max(
+                float(options.get("filter_max_m") or 12.0),
+                float(session.get("depth_projection", {}).get("maximum_depth_m") or 8.0),
+            ),
+            "units": "meters",
+        },
+        "points": points[::display_stride], "colors": colors[::display_stride],
+        "current_points": points[::display_stride], "current_colors": colors[::display_stride],
+        "point_count": len(points), "current_point_count": len(points),
+        "accumulated_scan_count": 1, "display_count": len(points[::display_stride]),
+        "display_stride": display_stride, "history_registered": True,
+        "history_paused": False, "pose_source": str(pose.get("message_type") or "external-pose"),
+        "registration": {
+            "method": "external-pose" if pose.get("message_type") != "static-identity" else "static-identity",
+            "frame": str(pose.get("frame") or "map"),
+            "child_frame": str(pose.get("child_frame") or "base_link"),
+            "x_m": float(pose.get("x_m") or 0.0), "y_m": float(pose.get("y_m") or 0.0),
+            "z_m": float(pose.get("z_m") or 0.0), "yaw_rad": float(pose.get("yaw_rad") or 0.0),
+            "source_time_ns": int(pose.get("source_time_ns") or 0),
+            "time_delta_seconds": pose.get("time_delta_seconds"),
+        },
+        "animation": {
+            "enabled": False, "show_rays": False, "ray_trail_count": 0,
+            "pulse_hz": 0.0, "sweep_direction": "none", "accumulate_hits": False,
+        },
+        "device": str(fused.get("device") or session["device"]),
+        "kernel_ms": float(fused.get("kernel_ms") or 0.0),
+        "depth_projection": dict(depth_report),
+        "sensor_fusion": fusion_report,
+        "synchronization": synchronization,
+    }
+    session.update(
+        live=True, scene=scene, source_marker=marker,
+        history_points=points, history_colors=colors, accumulated_scan_count=1,
+        status={
+            "kind": "blacknode.viewer-status", "schema_version": 1,
+            "state": "ready", "source_fresh": True,
+            "pose_connected": bool(session.get("pose_source")), "pose_fresh": bool(pose),
+            "received": int(lidar_outputs.get("received") or depth_time_ns),
+            "point_count": len(points), "current_point_count": len(points),
+            "accumulated_scan_count": 1, "history_paused": False,
+            "synchronization_delta_seconds": sync_delta_s,
+            "kernel_ms": float(scene["kernel_ms"]), "error": "",
+        },
+        report=(
+            f"Viewer {session['mode']} fused {int(fusion_report.get('lidar_points') or 0):,} LiDAR "
+            f"and {int(fusion_report.get('depth_points') or 0):,} RGB-D points; "
+            f"{int(fusion_report.get('matched_points') or 0):,} aligned, "
+            f"mean residual {float(fusion_report.get('mean_residual_m') or 0.0):.3f} m; "
+            f"Warp {float(fusion_report.get('pipeline_ms') or 0.0):.3f} ms"
+        ),
+    )
+
+
+def _update_depth_session(session: dict[str, Any]) -> None:
+    stage = (
+        session.get("depth_projection")
+        if isinstance(session.get("depth_projection"), dict)
+        else {}
+    )
+    if not stage.get("enabled", True):
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status",
+                "schema_version": 1,
+                "state": "waiting",
+                "source_fresh": False,
+                "error": "",
+            },
+            report="Warp depth projection is disabled",
+        )
+        return
+    from .warp_depth import process_depth_stream
+
+    processed = process_depth_stream(
+        dict(session["source"]),
+        stage,
+        device=session["device"],
+        color_stream=(
+            dict(session.get("color_source") or {})
+            if isinstance(session.get("color_source"), dict)
+            else None
+        ),
+    )
+    if not processed.get("ok"):
+        report = processed.get("report") if isinstance(processed.get("report"), dict) else {}
+        error = str(report.get("error") or "Warp depth projection failed")
+        state = str(report.get("state") or "error")
+        session.update(
+            live=False,
+            status={
+                "kind": "blacknode.viewer-status",
+                "schema_version": 1,
+                "state": "stale" if state == "stale" else "error",
+                "worker_alive": bool(report.get("worker_alive")),
+                "source_fresh": False,
+                "error": error,
+            },
+            report=error,
+        )
+        return
+
+    report = processed.get("report") if isinstance(processed.get("report"), dict) else {}
+    marker = int(report.get("source_time_ns") or 0)
+    points = list(processed.get("filtered_points") or [])
+    colors = list(processed.get("colors") or [])
+    tsdf_stage = (
+        session.get("tsdf_integration")
+        if isinstance(session.get("tsdf_integration"), dict)
+        else {}
+    )
+    surface_stage = (
+        session.get("surface_extraction")
+        if isinstance(session.get("surface_extraction"), dict)
+        else {}
+    )
+    if (
+        tsdf_stage
+        and tsdf_stage.get("enabled", True)
+        and surface_stage.get("enabled", True)
+    ):
+        if marker == session.get("source_marker") and session.get("scene"):
+            status = dict(session.get("status") or {})
+            status.update(state="ready", source_fresh=True, error="")
+            session.update(live=True, status=status)
+            return
+        if session.get("history_paused") and session.get("scene"):
+            status = dict(session.get("status") or {})
+            status.update(state="ready", source_fresh=True, history_paused=True, error="")
+            session.update(live=True, status=status, source_marker=marker)
+            return
+
+        pose_source = session.get("pose_source") if isinstance(session.get("pose_source"), dict) else {}
+        pose: dict[str, Any] = {}
+        pose_error = ""
+        if pose_source:
+            reader = session.get("source_reader")
+            if not callable(reader):
+                reader = _local_stream_reader
+            try:
+                pose_outputs = reader(dict(pose_source))
+            except Exception as exc:
+                pose_outputs = {
+                    "status": {
+                        "state": "unavailable",
+                        "source_fresh": False,
+                        "error": f"pose stream read failed ({type(exc).__name__}: {exc})",
+                    }
+                }
+            if not isinstance(pose_outputs, dict):
+                pose_outputs = {"status": {"state": "unavailable", "source_fresh": False}}
+            pose_status = pose_outputs.get("status") if isinstance(pose_outputs.get("status"), dict) else {}
+            if pose_status.get("source_fresh"):
+                pose, pose_error = _normalize_pose(
+                    pose_outputs,
+                    pose_source,
+                    marker,
+                    float(session["options"].get("pose_sync_tolerance_s") or 0.25),
+                    str(session["options"].get("pose_parent_frame") or "odom"),
+                    str(session["options"].get("pose_child_frame") or "auto"),
+                    str(processed.get("point_cloud", {}).get("frame") or "base_link"),
+                )
+            else:
+                pose_error = str(pose_status.get("error") or "Pose stream is not fresh")
+        if not pose and not tsdf_stage.get("require_pose", True):
+            pose = {
+                "x_m": 0.0, "y_m": 0.0, "z_m": 0.0, "yaw_rad": 0.0,
+                "frame": str(processed.get("point_cloud", {}).get("frame") or "base_link"),
+                "child_frame": str(processed.get("point_cloud", {}).get("frame") or "base_link"),
+                "message_type": "static-identity",
+                "source_time_ns": marker,
+                "time_delta_seconds": 0.0,
+            }
+        if not pose:
+            error = pose_error or "RGB-D reconstruction is waiting for a synchronized pose"
+            session.update(
+                live=False,
+                status={
+                    "kind": "blacknode.viewer-status", "schema_version": 1,
+                    "state": "waiting", "source_fresh": True,
+                    "pose_connected": bool(pose_source), "pose_fresh": False,
+                    "received": marker, "error": error,
+                },
+                report=error,
+            )
+            return
+
+        try:
+            from .warp_tsdf import WarpTSDFVolume
+
+            volume = session.get("tsdf_volume")
+            if not isinstance(volume, WarpTSDFVolume) or not volume.compatible(tsdf_stage, session["device"]):
+                volume = WarpTSDFVolume(tsdf_stage, device=session["device"])
+                session["tsdf_volume"] = volume
+            integrated = volume.integrate(
+                dict(processed.get("point_cloud") or {}),
+                pose=pose,
+                stage=tsdf_stage,
+            )
+            if not integrated.get("ok"):
+                raise RuntimeError(str(integrated.get("report", {}).get("error") or "TSDF integration failed"))
+            extracted = volume.extract(surface_stage)
+            if not extracted.get("ok"):
+                raise RuntimeError(str(extracted.get("report", {}).get("error") or "surface extraction failed"))
+        except Exception as exc:
+            error = f"Warp RGB-D reconstruction failed ({type(exc).__name__}: {exc})"
+            session.update(
+                live=False,
+                status={
+                    "kind": "blacknode.viewer-status", "schema_version": 1,
+                    "state": "error", "source_fresh": True, "received": marker,
+                    "error": error,
+                },
+                report=error,
+            )
+            return
+
+        surface_points = list(extracted.get("points") or [])
+        surface_colors = list(extracted.get("colors") or [])
+        display_stride = max(1, math.ceil(len(surface_points) / _MAX_EDITOR_POINTS))
+        integration_report = dict(integrated.get("report") or {})
+        extraction_report = dict(extracted.get("report") or {})
+        reconstruction = {
+            "kind": "blacknode.rgbd-reconstruction",
+            "schema_version": 1,
+            "integration": integration_report,
+            "extraction": extraction_report,
+            "color_registered": bool(report.get("color_registered")),
+            "pose_registered": pose.get("message_type") != "static-identity",
+        }
+        current_stride = max(1, math.ceil(len(points) / _MAX_EDITOR_POINTS))
+        scene = {
+            "kind": "blacknode.viewer-scene", "schema_version": 1,
+            "primitive": "rgbd-surface", "projection": "xyz",
+            "frame": str(pose.get("frame") or "map"),
+            "source_frame": str(processed.get("point_cloud", {}).get("source_frame") or "camera_depth"),
+            "source_time_ns": marker,
+            "receive_time_ns": int(processed.get("point_cloud", {}).get("receive_time_ns") or time.time_ns()),
+            "sequence": int(integration_report.get("frames_integrated") or 0),
+            "sensor": {
+                "x_m": float((integrated.get("sensor_origin") or [0.0, 0.0, 0.0])[0]),
+                "y_m": float((integrated.get("sensor_origin") or [0.0, 0.0, 0.0])[1]),
+                "z_m": float((integrated.get("sensor_origin") or [0.0, 0.0, 0.0])[2]),
+                "yaw_rad": float(pose.get("yaw_rad") or 0.0),
+            },
+            "view": {"radius_m": float(tsdf_stage.get("volume_radius_m") or 3.0), "units": "meters"},
+            "points": surface_points[::display_stride],
+            "colors": surface_colors[::display_stride],
+            "current_points": list(integrated.get("world_points") or [])[::current_stride],
+            "current_colors": list(integrated.get("colors") or [])[::current_stride],
+            "point_count": int(extraction_report.get("surface_voxels") or 0),
+            "current_point_count": len(points),
+            "accumulated_scan_count": int(integration_report.get("frames_integrated") or 0),
+            "display_count": len(surface_points[::display_stride]), "display_stride": display_stride,
+            "history_registered": True, "history_paused": False,
+            "pose_source": str(pose.get("message_type") or "external-pose"),
+            "registration": {
+                "method": "external-pose" if pose.get("message_type") != "static-identity" else "static-identity",
+                "frame": str(pose.get("frame") or "map"),
+                "child_frame": str(pose.get("child_frame") or "base_link"),
+                "x_m": float(pose.get("x_m") or 0.0), "y_m": float(pose.get("y_m") or 0.0),
+                "z_m": float(pose.get("z_m") or 0.0), "yaw_rad": float(pose.get("yaw_rad") or 0.0),
+                "source_time_ns": int(pose.get("source_time_ns") or 0),
+                "time_delta_seconds": pose.get("time_delta_seconds"),
+            },
+            "animation": {"enabled": False, "show_rays": False, "ray_trail_count": 0, "pulse_hz": 0.0, "sweep_direction": "none", "accumulate_hits": True},
+            "device": str(integration_report.get("device") or session["device"]),
+            "kernel_ms": float(integration_report.get("integration_ms") or 0.0) + float(extraction_report.get("extraction_ms") or 0.0),
+            "depth_projection": dict(report), "reconstruction": reconstruction,
+        }
+        session.update(
+            live=True, scene=scene, source_time_ns=marker, source_marker=marker,
+            history_points=surface_points, history_colors=surface_colors,
+            accumulated_scan_count=int(integration_report.get("frames_integrated") or 0),
+            status={
+                "kind": "blacknode.viewer-status", "schema_version": 1,
+                "state": "ready", "source_fresh": True,
+                "pose_connected": bool(pose_source), "pose_fresh": bool(pose),
+                "received": marker, "point_count": int(scene["point_count"]),
+                "current_point_count": len(points),
+                "accumulated_scan_count": int(scene["accumulated_scan_count"]),
+                "history_paused": False, "kernel_ms": float(scene["kernel_ms"]), "error": "",
+            },
+            report=(
+                f"Viewer {session['mode']} reconstructed {int(scene['point_count']):,} surface voxels "
+                f"from {int(scene['accumulated_scan_count']):,} RGB-D frame(s); "
+                f"Warp {float(scene['kernel_ms']):.3f} ms"
+            ),
+        )
+        return
+
+    display_stride = max(1, math.ceil(len(points) / _MAX_EDITOR_POINTS))
+    scene = {
+        "kind": "blacknode.viewer-scene",
+        "schema_version": 1,
+        "primitive": "point-cloud",
+        "projection": "xyz",
+        "frame": str(processed.get("point_cloud", {}).get("frame") or "camera_depth"),
+        "source_frame": str(processed.get("point_cloud", {}).get("source_frame") or "camera_depth"),
+        "source_time_ns": marker,
+        "receive_time_ns": int(processed.get("point_cloud", {}).get("receive_time_ns") or time.time_ns()),
+        "sequence": marker,
+        "sensor": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+        "view": {
+            "radius_m": max(0.1, float(stage.get("maximum_depth_m") or 8.0)),
+            "units": "meters",
+        },
+        "points": points[::display_stride],
+        "colors": colors[::display_stride],
+        "current_points": points[::display_stride],
+        "current_colors": colors[::display_stride],
+        "point_count": len(points),
+        "current_point_count": len(points),
+        "accumulated_scan_count": 1 if points else 0,
+        "display_count": len(points[::display_stride]),
+        "display_stride": display_stride,
+        "history_registered": False,
+        "history_paused": False,
+        "pose_source": "camera-local",
+        "registration": {},
+        "animation": {
+            "enabled": False,
+            "show_rays": False,
+            "ray_trail_count": 0,
+            "pulse_hz": 0.0,
+            "sweep_direction": "none",
+            "accumulate_hits": False,
+        },
+        "device": str(processed.get("device") or ""),
+        "kernel_ms": float(processed.get("kernel_ms") or 0.0),
+        "depth_projection": dict(report),
+    }
+    session.update(
+        live=True,
+        scene=scene,
+        source_time_ns=marker,
+        source_marker=marker,
+        history_points=points,
+        history_colors=colors,
+        accumulated_scan_count=1 if points else 0,
+        status={
+            "kind": "blacknode.viewer-status",
+            "schema_version": 1,
+            "state": "ready",
+            "source_fresh": True,
+            "received": marker,
+            "point_count": len(points),
+            "current_point_count": len(points),
+            "accumulated_scan_count": 1 if points else 0,
+            "history_paused": False,
+            "kernel_ms": float(processed.get("kernel_ms") or 0.0),
+            "error": "",
+        },
+        report=(
+            f"Viewer {session['mode']} projected {len(points):,} metric depth points; "
+            f"Warp {float(report.get('pipeline_ms') or 0.0):.3f} ms; "
+            f"fetch {float(report.get('fetch_ms') or 0.0):.3f} ms"
+        ),
+    )
+
+
 def _update_session(session: dict[str, Any]) -> None:
+    sensor_fusion = session.get("sensor_fusion") if isinstance(session.get("sensor_fusion"), dict) else {}
+    if sensor_fusion and sensor_fusion.get("enabled", True):
+        _update_fusion_session(session)
+        return
+    if session.get("source", {}).get("kind") == "blacknode.depth-stream":
+        _update_depth_session(session)
+        return
     reader = session.get("source_reader")
     if not callable(reader):
         reader = _local_stream_reader
@@ -729,6 +1350,12 @@ def start_viewer(
     viewer_id: str,
     node_id: str,
     source: dict[str, Any],
+    lidar_source: dict[str, Any] | None,
+    color_source: dict[str, Any] | None,
+    depth_projection: dict[str, Any] | None,
+    tsdf_integration: dict[str, Any] | None,
+    surface_extraction: dict[str, Any] | None,
+    sensor_fusion: dict[str, Any] | None,
     pose_source: dict[str, Any] | None,
     pose_static_source: dict[str, Any] | None,
     mode: str,
@@ -749,14 +1376,90 @@ def start_viewer(
             "viewer": {},
             "report": "viewer_id is required",
         }
-    if source.get("kind") != "blacknode.message-stream":
+    if source.get("kind") not in {"blacknode.message-stream", "blacknode.depth-stream"}:
         return {
             "running": False,
             "live": False,
             "scene": {},
-            "status": {"state": "error", "error": "source must be a blacknode.message-stream"},
+            "status": {"state": "error", "error": "source must be a Blacknode message or depth stream"},
             "viewer": {},
-            "report": "Connect ROS2.stream to Viewer.source",
+            "report": "Connect ROS2.stream or DepthCamera.depth_stream to Viewer.source",
+        }
+    if source.get("kind") == "blacknode.depth-stream" and (
+        not isinstance(depth_projection, dict)
+        or depth_projection.get("kind") != "blacknode.warp-depth-projector"
+    ):
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "status": {"state": "error", "error": "depth projection stage is required"},
+            "viewer": {},
+            "report": "Connect WarpDepthProjector.stage to Viewer.depth_projection",
+        }
+    if color_source and color_source.get("kind") != "blacknode.frame-stream":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "color source must be a frame stream"},
+            "viewer": {}, "report": "Connect Camera.frame_stream to Viewer.color_source",
+        }
+    if tsdf_integration and tsdf_integration.get("kind") != "blacknode.warp-tsdf-integration":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "invalid TSDF integration stage"},
+            "viewer": {}, "report": "Connect WarpTSDFIntegration.stage to Viewer.tsdf_integration",
+        }
+    if sensor_fusion and sensor_fusion.get("kind") != "blacknode.warp-sensor-fusion":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "invalid sensor fusion stage"},
+            "viewer": {}, "report": "Connect WarpSensorFusion.stage to Viewer.sensor_fusion",
+        }
+    if sensor_fusion and sensor_fusion.get("enabled", True) and source.get("kind") != "blacknode.depth-stream":
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "metric depth source is required for sensor fusion"},
+            "viewer": {}, "report": "Connect DepthCamera.depth_stream to Viewer.source",
+        }
+    if sensor_fusion and sensor_fusion.get("enabled", True) and (
+        not isinstance(lidar_source, dict)
+        or lidar_source.get("kind") not in {"blacknode.message-stream", "blacknode.laser-scan-stream"}
+    ):
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "LiDAR source is required for sensor fusion"},
+            "viewer": {}, "report": "Connect LiDAR.laser_scan or ROS2.stream to Viewer.lidar_source",
+        }
+    if tsdf_integration and tsdf_integration.get("enabled", True) and (
+        not isinstance(surface_extraction, dict)
+        or surface_extraction.get("kind") != "blacknode.warp-surface-extraction"
+    ):
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "surface extraction stage is required"},
+            "viewer": {}, "report": "Connect WarpSurfaceExtraction.stage to Viewer.surface_extraction",
+        }
+    if (
+        tsdf_integration
+        and tsdf_integration.get("enabled", True)
+        and tsdf_integration.get("require_pose", True)
+        and not pose_source
+    ):
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "pose is required for RGB-D reconstruction"},
+            "viewer": {}, "report": "Connect a pose-producing ROS2.stream to Viewer.pose or disable require_pose for a fixed camera",
+        }
+    if (
+        sensor_fusion
+        and sensor_fusion.get("enabled", True)
+        and sensor_fusion.get("require_pose", True)
+        and not pose_source
+    ):
+        return {
+            "running": False, "live": False, "scene": {},
+            "status": {"state": "error", "error": "pose is required for sensor fusion"},
+            "viewer": {}, "report": "Connect a pose-producing ROS2.stream to Viewer.pose or disable require_pose for a fixed sensor rig",
         }
     if pose_source and pose_source.get("kind") != "blacknode.message-stream":
         return {
@@ -789,6 +1492,12 @@ def start_viewer(
             "viewer_id": clean_id,
             "node_id": str(node_id or ""),
             "source": dict(source),
+            "lidar_source": dict(lidar_source or {}),
+            "color_source": dict(color_source or {}),
+            "depth_projection": dict(depth_projection or {}),
+            "tsdf_integration": dict(tsdf_integration or {}),
+            "surface_extraction": dict(surface_extraction or {}),
+            "sensor_fusion": dict(sensor_fusion or {}),
             "pose_source": dict(pose_source or {}),
             "pose_static_source": dict(pose_static_source or {}),
             "source_reader": source_reader,
@@ -807,7 +1516,11 @@ def start_viewer(
                 "received": 0,
                 "error": "",
             },
-            "report": "Viewer started; waiting for a fresh LaserScan message",
+            "report": (
+                "Viewer started; waiting for a fresh metric depth frame"
+                if source.get("kind") == "blacknode.depth-stream"
+                else "Viewer started; waiting for a fresh LaserScan message"
+            ),
             "stop_event": stop_event,
         }
         _SESSIONS[clean_id] = session
@@ -854,6 +1567,8 @@ def clear_viewer(viewer_id: str) -> dict[str, Any]:
         session["history_points"] = []
         session["history_colors"] = []
         session["accumulated_scan_count"] = 0
+        session.pop("tsdf_volume", None)
+        session.pop("source_marker", None)
         session["history_paused"] = True
         scene = dict(session.get("scene") or {})
         if scene:
