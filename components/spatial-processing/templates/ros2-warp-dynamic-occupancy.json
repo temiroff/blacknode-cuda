@@ -3,24 +3,64 @@
   "schema_version": 1,
   "name": "ROS2 Warp Dynamic Occupancy",
   "saved_at": "2026-08-04T00:00:00",
-  "entrypoint": {"node_id": "slam", "port": "scene"},
+  "entrypoint": {
+    "node_id": "slam",
+    "port": "scene"
+  },
   "metadata": {
     "template": true,
     "description": "Select a paired compute device, subscribe to scan and odometry topics, and connect a visible Warp HashGrid stage that highlights coherent moving returns as orange points inside the managed SLAM viewer.",
     "color": "#ff8b79",
-    "required_packages": ["blacknode-robot", "blacknode-ros2", "blacknode-cuda"]
+    "required_packages": [
+      "blacknode-robot",
+      "blacknode-ros2",
+      "blacknode-cuda",
+      "blacknode-perception"
+    ],
+    "required_components": [
+      "blacknode-perception/lidar"
+    ]
   },
   "node_meta": {
     "device": {
       "id": "device",
       "type": "ComputeDevice",
-      "params": {"device_id": "", "device_name": ""},
-      "pos": [40, 220],
-      "inputs": ["device_id", "device_name", "inspection"],
-      "outputs": ["configured", "inspection_available", "device", "inspection", "report"],
-      "input_types": {"device_id": "Text", "device_name": "Text", "inspection": "Dict"},
-      "output_types": {"configured": "Bool", "inspection_available": "Bool", "device": "Dict", "inspection": "Dict", "report": "Text"},
-      "input_defaults": {"device_id": "", "device_name": ""}
+      "params": {
+        "device_id": "",
+        "device_name": ""
+      },
+      "pos": [
+        40,
+        220
+      ],
+      "inputs": [
+        "device_id",
+        "device_name",
+        "inspection"
+      ],
+      "outputs": [
+        "configured",
+        "inspection_available",
+        "device",
+        "inspection",
+        "report"
+      ],
+      "input_types": {
+        "device_id": "Text",
+        "device_name": "Text",
+        "inspection": "Dict"
+      },
+      "output_types": {
+        "configured": "Bool",
+        "inspection_available": "Bool",
+        "device": "Dict",
+        "inspection": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "device_id": "",
+        "device_name": ""
+      }
     },
     "scan": {
       "id": "scan",
@@ -33,15 +73,92 @@
         "qos": "sensor_data",
         "history": 20,
         "timeout": 10.0,
-        "stale_after_seconds": 1.0
+        "stale_after_seconds": 1.0,
+        "transport": "message",
+        "stream_options": {}
       },
-      "pos": [390, 100],
-      "inputs": ["trigger", "device", "action", "topic", "message_type", "node_name", "qos", "history", "timeout", "stale_after_seconds"],
-      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
-      "input_types": {"trigger": "Any", "device": "Dict", "action": "Text", "topic": "Text", "message_type": "Text", "node_name": "Text", "qos": "Text", "history": "Int", "timeout": "Float", "stale_after_seconds": "Float"},
-      "output_types": {"running": "Bool", "message": "Dict", "messages": "List", "stream": "Dict", "status": "Dict", "received": "Int", "backend": "Text", "report": "Text"},
-      "input_defaults": {"action": "status", "topic": "/scan", "message_type": "", "node_name": "blacknode_ros2_topic", "qos": "default", "history": 10, "timeout": 10.0, "stale_after_seconds": 2.0},
-      "input_choices": {"action": ["once", "start", "status", "stop"], "qos": ["default", "sensor_data", "reliable", "best_effort", "transient_local"]}
+      "pos": [
+        390,
+        100
+      ],
+      "inputs": [
+        "trigger",
+        "device",
+        "action",
+        "topic",
+        "message_type",
+        "transport",
+        "stream_options",
+        "node_name",
+        "history",
+        "timeout",
+        "stale_after_seconds",
+        "qos"
+      ],
+      "outputs": [
+        "running",
+        "message",
+        "messages",
+        "stream",
+        "status",
+        "received",
+        "backend",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "device": "Dict",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "transport": "Text",
+        "stream_options": "Dict",
+        "node_name": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float",
+        "qos": "Text"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "transport": "auto",
+        "stream_options": {},
+        "node_name": "blacknode_ros2_topic",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 2.0,
+        "qos": "sensor_data"
+      },
+      "input_choices": {
+        "action": [
+          "once",
+          "start",
+          "status",
+          "stop"
+        ],
+        "transport": [
+          "auto",
+          "message",
+          "image"
+        ],
+        "qos": [
+          "sensor_data",
+          "reliable",
+          "transient_local"
+        ]
+      }
     },
     "odometry": {
       "id": "odometry",
@@ -56,13 +173,79 @@
         "timeout": 10.0,
         "stale_after_seconds": 1.0
       },
-      "pos": [390, 420],
-      "inputs": ["trigger", "device", "action", "topic", "message_type", "node_name", "qos", "history", "timeout", "stale_after_seconds"],
-      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
-      "input_types": {"trigger": "Any", "device": "Dict", "action": "Text", "topic": "Text", "message_type": "Text", "node_name": "Text", "qos": "Text", "history": "Int", "timeout": "Float", "stale_after_seconds": "Float"},
-      "output_types": {"running": "Bool", "message": "Dict", "messages": "List", "stream": "Dict", "status": "Dict", "received": "Int", "backend": "Text", "report": "Text"},
-      "input_defaults": {"action": "status", "topic": "/scan", "message_type": "", "node_name": "blacknode_ros2_topic", "qos": "default", "history": 10, "timeout": 10.0, "stale_after_seconds": 2.0},
-      "input_choices": {"action": ["once", "start", "status", "stop"], "qos": ["default", "sensor_data", "reliable", "best_effort", "transient_local"]}
+      "pos": [
+        390,
+        420
+      ],
+      "inputs": [
+        "trigger",
+        "device",
+        "action",
+        "topic",
+        "message_type",
+        "node_name",
+        "qos",
+        "history",
+        "timeout",
+        "stale_after_seconds"
+      ],
+      "outputs": [
+        "running",
+        "message",
+        "messages",
+        "stream",
+        "status",
+        "received",
+        "backend",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "device": "Dict",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "node_name": "Text",
+        "qos": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "node_name": "blacknode_ros2_topic",
+        "qos": "default",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 2.0
+      },
+      "input_choices": {
+        "action": [
+          "once",
+          "start",
+          "status",
+          "stop"
+        ],
+        "qos": [
+          "default",
+          "sensor_data",
+          "reliable",
+          "best_effort",
+          "transient_local"
+        ]
+      }
     },
     "dynamic_occupancy": {
       "id": "dynamic_occupancy",
@@ -78,12 +261,55 @@
         "trail_seconds": 0.35,
         "compare_cpu": false
       },
-      "pos": [770, 560],
-      "inputs": ["enabled", "stable_radius_m", "tracking_radius_m", "minimum_speed_mps", "maximum_age_s", "maximum_points", "display_points", "trail_seconds", "compare_cpu"],
-      "outputs": ["stage", "enabled", "workload", "report"],
-      "input_types": {"enabled": "Bool", "stable_radius_m": "Float", "tracking_radius_m": "Float", "minimum_speed_mps": "Float", "maximum_age_s": "Float", "maximum_points": "Int", "display_points": "Int", "trail_seconds": "Float", "compare_cpu": "Bool"},
-      "output_types": {"stage": "Dict", "enabled": "Bool", "workload": "Text", "report": "Text"},
-      "input_defaults": {"enabled": true, "stable_radius_m": 0.04, "tracking_radius_m": 0.35, "minimum_speed_mps": 0.04, "maximum_age_s": 0.6, "maximum_points": 65536, "display_points": 1500, "trail_seconds": 0.35, "compare_cpu": false}
+      "pos": [
+        770,
+        560
+      ],
+      "inputs": [
+        "enabled",
+        "stable_radius_m",
+        "tracking_radius_m",
+        "minimum_speed_mps",
+        "maximum_age_s",
+        "maximum_points",
+        "display_points",
+        "trail_seconds",
+        "compare_cpu"
+      ],
+      "outputs": [
+        "stage",
+        "enabled",
+        "workload",
+        "report"
+      ],
+      "input_types": {
+        "enabled": "Bool",
+        "stable_radius_m": "Float",
+        "tracking_radius_m": "Float",
+        "minimum_speed_mps": "Float",
+        "maximum_age_s": "Float",
+        "maximum_points": "Int",
+        "display_points": "Int",
+        "trail_seconds": "Float",
+        "compare_cpu": "Bool"
+      },
+      "output_types": {
+        "stage": "Dict",
+        "enabled": "Bool",
+        "workload": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "enabled": true,
+        "stable_radius_m": 0.04,
+        "tracking_radius_m": 0.35,
+        "minimum_speed_mps": 0.04,
+        "maximum_age_s": 0.6,
+        "maximum_points": 65536,
+        "display_points": 1500,
+        "trail_seconds": 0.35,
+        "compare_cpu": false
+      }
     },
     "slam": {
       "id": "slam",
@@ -121,20 +347,223 @@
         "pose_child_frame": "auto",
         "fps": 30
       },
-      "pos": [1120, 120],
-      "inputs": ["action", "source", "odometry", "particle_localization", "dynamic_occupancy", "trajectory_evaluation", "slam_id", "mode", "device", "filter_min_m", "filter_max_m", "downsample_stride", "sensor_x_m", "sensor_y_m", "sensor_yaw_rad", "robot_length_m", "robot_width_m", "robot_height_m", "map_resolution_m", "occupancy_radius_m", "match_linear_window_m", "match_angular_window_deg", "tracking_min_score", "mapping_min_score", "keyframe_translation_m", "keyframe_rotation_deg", "keyframe_interval_s", "loop_closure_radius_m", "loop_closure_min_score", "loop_closure_min_separation", "max_keyframes", "max_map_points", "pose_sync_tolerance_s", "pose_parent_frame", "pose_child_frame", "fps"],
-      "outputs": ["running", "live", "scene", "pose", "map", "status", "viewer", "report"],
-      "input_types": {"action": "Text", "source": "Dict", "odometry": "Dict", "particle_localization": "Dict", "dynamic_occupancy": "Dict", "trajectory_evaluation": "Dict", "slam_id": "Text", "mode": "Text", "device": "Text", "filter_min_m": "Float", "filter_max_m": "Float", "downsample_stride": "Int", "sensor_x_m": "Float", "sensor_y_m": "Float", "sensor_yaw_rad": "Float", "robot_length_m": "Float", "robot_width_m": "Float", "robot_height_m": "Float", "map_resolution_m": "Float", "occupancy_radius_m": "Float", "match_linear_window_m": "Float", "match_angular_window_deg": "Float", "tracking_min_score": "Float", "mapping_min_score": "Float", "keyframe_translation_m": "Float", "keyframe_rotation_deg": "Float", "keyframe_interval_s": "Float", "loop_closure_radius_m": "Float", "loop_closure_min_score": "Float", "loop_closure_min_separation": "Int", "max_keyframes": "Int", "max_map_points": "Int", "pose_sync_tolerance_s": "Float", "pose_parent_frame": "Text", "pose_child_frame": "Text", "fps": "Int"},
-      "output_types": {"running": "Bool", "live": "Bool", "scene": "Dict", "pose": "Dict", "map": "Dict", "status": "Dict", "viewer": "Dict", "report": "Text"},
-      "input_defaults": {"action": "status", "slam_id": "slam", "mode": "editor", "device": "cuda:0", "filter_min_m": 0.1, "filter_max_m": 12.0, "downsample_stride": 1, "sensor_x_m": 0.0, "sensor_y_m": 0.0, "sensor_yaw_rad": 0.0, "robot_length_m": 0.25, "robot_width_m": 0.22, "robot_height_m": 0.08, "map_resolution_m": 0.05, "occupancy_radius_m": 20.0, "match_linear_window_m": 0.4, "match_angular_window_deg": 10.0, "tracking_min_score": 0.2, "mapping_min_score": 0.3, "keyframe_translation_m": 0.15, "keyframe_rotation_deg": 8.0, "keyframe_interval_s": 2.0, "loop_closure_radius_m": 1.0, "loop_closure_min_score": 0.55, "loop_closure_min_separation": 20, "max_keyframes": 400, "max_map_points": 50000, "pose_sync_tolerance_s": 0.25, "pose_parent_frame": "odom", "pose_child_frame": "auto", "fps": 30},
-      "input_choices": {"action": ["status", "start", "clear", "pause", "resume", "stop"], "mode": ["editor", "device"], "device": ["cuda:0", "cpu"]}
+      "pos": [
+        1120,
+        120
+      ],
+      "inputs": [
+        "action",
+        "source",
+        "odometry",
+        "particle_localization",
+        "dynamic_occupancy",
+        "trajectory_evaluation",
+        "slam_id",
+        "mode",
+        "device",
+        "filter_min_m",
+        "filter_max_m",
+        "downsample_stride",
+        "sensor_x_m",
+        "sensor_y_m",
+        "sensor_yaw_rad",
+        "robot_length_m",
+        "robot_width_m",
+        "robot_height_m",
+        "map_resolution_m",
+        "occupancy_radius_m",
+        "match_linear_window_m",
+        "match_angular_window_deg",
+        "tracking_min_score",
+        "mapping_min_score",
+        "keyframe_translation_m",
+        "keyframe_rotation_deg",
+        "keyframe_interval_s",
+        "loop_closure_radius_m",
+        "loop_closure_min_score",
+        "loop_closure_min_separation",
+        "max_keyframes",
+        "max_map_points",
+        "pose_sync_tolerance_s",
+        "pose_parent_frame",
+        "pose_child_frame",
+        "fps"
+      ],
+      "outputs": [
+        "running",
+        "live",
+        "scene",
+        "pose",
+        "map",
+        "status",
+        "viewer",
+        "report"
+      ],
+      "input_types": {
+        "action": "Text",
+        "source": "Dict",
+        "odometry": "Dict",
+        "particle_localization": "Dict",
+        "dynamic_occupancy": "Dict",
+        "trajectory_evaluation": "Dict",
+        "slam_id": "Text",
+        "mode": "Text",
+        "device": "Text",
+        "filter_min_m": "Float",
+        "filter_max_m": "Float",
+        "downsample_stride": "Int",
+        "sensor_x_m": "Float",
+        "sensor_y_m": "Float",
+        "sensor_yaw_rad": "Float",
+        "robot_length_m": "Float",
+        "robot_width_m": "Float",
+        "robot_height_m": "Float",
+        "map_resolution_m": "Float",
+        "occupancy_radius_m": "Float",
+        "match_linear_window_m": "Float",
+        "match_angular_window_deg": "Float",
+        "tracking_min_score": "Float",
+        "mapping_min_score": "Float",
+        "keyframe_translation_m": "Float",
+        "keyframe_rotation_deg": "Float",
+        "keyframe_interval_s": "Float",
+        "loop_closure_radius_m": "Float",
+        "loop_closure_min_score": "Float",
+        "loop_closure_min_separation": "Int",
+        "max_keyframes": "Int",
+        "max_map_points": "Int",
+        "pose_sync_tolerance_s": "Float",
+        "pose_parent_frame": "Text",
+        "pose_child_frame": "Text",
+        "fps": "Int"
+      },
+      "output_types": {
+        "running": "Bool",
+        "live": "Bool",
+        "scene": "Dict",
+        "pose": "Dict",
+        "map": "Dict",
+        "status": "Dict",
+        "viewer": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "slam_id": "slam",
+        "mode": "editor",
+        "device": "cuda:0",
+        "filter_min_m": 0.1,
+        "filter_max_m": 12.0,
+        "downsample_stride": 1,
+        "sensor_x_m": 0.0,
+        "sensor_y_m": 0.0,
+        "sensor_yaw_rad": 0.0,
+        "robot_length_m": 0.25,
+        "robot_width_m": 0.22,
+        "robot_height_m": 0.08,
+        "map_resolution_m": 0.05,
+        "occupancy_radius_m": 20.0,
+        "match_linear_window_m": 0.4,
+        "match_angular_window_deg": 10.0,
+        "tracking_min_score": 0.2,
+        "mapping_min_score": 0.3,
+        "keyframe_translation_m": 0.15,
+        "keyframe_rotation_deg": 8.0,
+        "keyframe_interval_s": 2.0,
+        "loop_closure_radius_m": 1.0,
+        "loop_closure_min_score": 0.55,
+        "loop_closure_min_separation": 20,
+        "max_keyframes": 400,
+        "max_map_points": 50000,
+        "pose_sync_tolerance_s": 0.25,
+        "pose_parent_frame": "odom",
+        "pose_child_frame": "auto",
+        "fps": 30
+      },
+      "input_choices": {
+        "action": [
+          "status",
+          "start",
+          "clear",
+          "pause",
+          "resume",
+          "stop"
+        ],
+        "mode": [
+          "editor",
+          "device"
+        ],
+        "device": [
+          "cuda:0",
+          "cpu"
+        ]
+      }
+    },
+    "scan_processor": {
+      "id": "scan_processor",
+      "type": "LaserScanProcessor",
+      "params": {},
+      "pos": [
+        690.0,
+        100.0
+      ],
+      "inputs": [
+        "source"
+      ],
+      "outputs": [
+        "stream",
+        "laser_scan",
+        "health",
+        "report"
+      ],
+      "input_types": {
+        "source": "Dict"
+      },
+      "output_types": {
+        "stream": "Dict",
+        "laser_scan": "Dict",
+        "health": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {}
     }
   },
   "edges": [
-    {"from": "device", "from_port": "device", "to": "scan", "to_port": "device"},
-    {"from": "device", "from_port": "device", "to": "odometry", "to_port": "device"},
-    {"from": "scan", "from_port": "stream", "to": "slam", "to_port": "source"},
-    {"from": "odometry", "from_port": "stream", "to": "slam", "to_port": "odometry"},
-    {"from": "dynamic_occupancy", "from_port": "stage", "to": "slam", "to_port": "dynamic_occupancy"}
+    {
+      "from": "device",
+      "from_port": "device",
+      "to": "scan",
+      "to_port": "device"
+    },
+    {
+      "from": "device",
+      "from_port": "device",
+      "to": "odometry",
+      "to_port": "device"
+    },
+    {
+      "from": "scan_processor",
+      "from_port": "stream",
+      "to": "slam",
+      "to_port": "source"
+    },
+    {
+      "from": "odometry",
+      "from_port": "stream",
+      "to": "slam",
+      "to_port": "odometry"
+    },
+    {
+      "from": "dynamic_occupancy",
+      "from_port": "stage",
+      "to": "slam",
+      "to_port": "dynamic_occupancy"
+    },
+    {
+      "from": "scan",
+      "from_port": "stream",
+      "to": "scan_processor",
+      "to_port": "source"
+    }
   ]
 }
