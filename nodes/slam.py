@@ -65,6 +65,7 @@ def slam_options(values: dict) -> dict:
         "odometry": Dict,
         "particle_localization": Dict,
         "dynamic_occupancy": Dict,
+        "trajectory_evaluation": Dict,
         "slam_id": Text(default="slam"),
         "mode": Enum(["editor", "device"], default="editor"),
         "device": Enum(["cuda:0", "cpu"], default="cuda:0"),
@@ -106,7 +107,7 @@ def slam_options(values: dict) -> dict:
         "viewer": Dict,
         "report": Text,
     },
-    primary_inputs=["source", "odometry", "particle_localization", "dynamic_occupancy", "action", "mode"],
+    primary_inputs=["source", "odometry", "particle_localization", "dynamic_occupancy", "trajectory_evaluation", "action", "mode"],
     primary_outputs=["scene", "pose", "map", "status", "report"],
     live=True,
 )
@@ -156,6 +157,11 @@ def slam(ctx: dict) -> dict:
         if isinstance(ctx.get("dynamic_occupancy"), dict)
         else {}
     )
+    trajectory_evaluation = (
+        ctx.get("trajectory_evaluation")
+        if isinstance(ctx.get("trajectory_evaluation"), dict)
+        else {}
+    )
     if particle_localization and particle_localization.get("kind") != "blacknode.warp-particle-localization":
         return {
             "running": False,
@@ -178,6 +184,17 @@ def slam(ctx: dict) -> dict:
             "viewer": {},
             "report": "Connect WarpDynamicOccupancy.stage to SLAM.dynamic_occupancy",
         }
+    if trajectory_evaluation and trajectory_evaluation.get("kind") != "blacknode.warp-trajectory-evaluator":
+        return {
+            "running": False,
+            "live": False,
+            "scene": {},
+            "pose": {},
+            "map": {},
+            "status": {"state": "error", "error": "trajectory_evaluation must be a WarpTrajectoryEvaluator stage"},
+            "viewer": {},
+            "report": "Connect WarpTrajectoryEvaluator.stage to SLAM.trajectory_evaluation",
+        }
     reader = ctx.get("__message_stream_reader__")
     return slam_runtime.start_slam(
         slam_id=slam_id,
@@ -189,5 +206,6 @@ def slam(ctx: dict) -> dict:
         options=slam_options(ctx),
         particle_localization=particle_localization,
         dynamic_occupancy=dynamic_occupancy,
+        trajectory_evaluation=trajectory_evaluation,
         source_reader=reader if callable(reader) else None,
     )

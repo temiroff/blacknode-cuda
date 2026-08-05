@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 import time
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -252,6 +254,7 @@ def test_slam_node_declares_generic_stream_contract():
     assert fn._bn_input_types["odometry"] == "Dict"
     assert fn._bn_input_types["particle_localization"] == "Dict"
     assert fn._bn_input_types["dynamic_occupancy"] == "Dict"
+    assert fn._bn_input_types["trajectory_evaluation"] == "Dict"
     assert fn._bn_input_types["robot_length_m"] == "Float"
     assert fn._bn_input_types["robot_width_m"] == "Float"
     assert fn._bn_input_defaults["downsample_stride"] == 1
@@ -281,6 +284,127 @@ def test_dynamic_occupancy_stage_is_explicit():
     assert result["stage"]["maximum_points"] == 5_000
     assert result["stage"]["display_points"] == 600
     assert result["workload"] == "up to 5,000 registered returns per fresh scan"
+
+
+def test_trajectory_evaluator_stage_is_explicit_and_never_commands_motion():
+    result = _NODE_REGISTRY["WarpTrajectoryEvaluator"]({
+        "enabled": True,
+        "goal_x_m": 2.5,
+        "goal_y_m": -0.5,
+        "trajectories": 2_048,
+        "time_steps": 40,
+        "horizon_s": 2.5,
+        "maximum_linear_speed_mps": 0.8,
+        "maximum_angular_speed_rps": 1.2,
+        "robot_radius_m": 0.2,
+        "clearance_margin_m": 0.15,
+        "display_trajectories": 80,
+    })
+
+    assert result["stage"]["kind"] == "blacknode.warp-trajectory-evaluator"
+    assert result["stage"]["goal_x_m"] == pytest.approx(2.5)
+    assert result["stage"]["goal_y_m"] == pytest.approx(-0.5)
+    assert result["stage"]["trajectory_count"] == 2_048
+    assert result["stage"]["time_steps"] == 40
+    assert result["stage"]["commands_motion"] is False
+    assert result["workload"] == "2,048 trajectories × 40 future steps per fresh scan"
+
+
+def test_navigation_lab_wires_visible_warp_stages_into_managed_slam():
+    template = json.loads((
+        Path(__file__).resolve().parents[1]
+        / "components" / "spatial-processing" / "templates" / "ros2-warp-navigation-lab.json"
+    ).read_text(encoding="utf-8"))
+
+    assert template["kind"] == "blacknode.workflow"
+    assert template["entrypoint"] == {"node_id": "slam", "port": "scene"}
+    assert template["metadata"]["required_packages"] == [
+        "blacknode-robot", "blacknode-ros2", "blacknode-cuda",
+    ]
+    assert template["node_meta"]["trajectory_evaluation"]["type"] == "WarpTrajectoryEvaluator"
+    assert template["node_meta"]["dynamic_occupancy"]["type"] == "WarpDynamicOccupancy"
+    assert {
+        (edge["from"], edge["from_port"], edge["to"], edge["to_port"])
+        for edge in template["edges"]
+    } >= {
+        ("dynamic_occupancy", "stage", "slam", "dynamic_occupancy"),
+        ("trajectory_evaluation", "stage", "slam", "trajectory_evaluation"),
+    }
+
+
+def test_trajectory_stage_scores_live_occupancy_and_publishes_viewer_paths(monkeypatch):
+    slam_runtime.stop_slam()
+    local = _points()
+    monkeypatch.setattr(
+        warp_points,
+        "process_laser_scan",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "filtered_points": local.astype(float).tolist(),
+            "filtered_indices": list(range(len(local))),
+            "kernel_ms": 0.2,
+        },
+    )
+    stage = _NODE_REGISTRY["WarpTrajectoryEvaluator"]({
+        "enabled": True,
+        "goal_x_m": 2.0,
+        "goal_y_m": 0.0,
+        "trajectories": 96,
+        "time_steps": 12,
+        "horizon_s": 1.5,
+        "maximum_linear_speed_mps": 0.6,
+        "maximum_angular_speed_rps": 1.0,
+        "display_trajectories": 24,
+    })["stage"]
+    reader_count = 0
+
+    def read_scan(_source_value):
+        nonlocal reader_count
+        reader_count += 1
+        sample_index = min(reader_count, 4)
+        message = _message(1)
+        message["message"]["header"]["stamp"]["nanosec"] = sample_index * 100_000_000
+        return {
+            "messages": [message],
+            "received": sample_index,
+            "status": {
+                "state": "ready",
+                "source_fresh": True,
+                "last_message_time_ns": 1_000_000_000 + sample_index * 100_000_000,
+            },
+        }
+
+    started = _NODE_REGISTRY["SLAM"]({
+        "action": "start",
+        "source": _source(),
+        "trajectory_evaluation": stage,
+        "slam_id": "trajectory-evaluation",
+        "mode": "editor",
+        "device": "cpu",
+        "mapping_min_score": 0.0,
+        "__node_id__": "trajectory-slam-node",
+        "__message_stream_reader__": read_scan,
+    })
+    for _ in range(80):
+        evaluation = started.get("scene", {}).get("trajectory_evaluation", {})
+        if evaluation.get("state") == "ready":
+            break
+        time.sleep(0.02)
+        started = slam_runtime.slam_status("trajectory-evaluation")
+
+    evaluation = started["scene"]["trajectory_evaluation"]
+    assert evaluation["state"] == "ready"
+    assert evaluation["backend"] == "warp"
+    assert evaluation["trajectory_count"] == 96
+    assert evaluation["work_items"] == 96 * 12
+    assert evaluation["commands_motion"] is False
+    assert evaluation["safe_trajectories"] + evaluation["unsafe_trajectories"] == 96
+    assert len(started["scene"]["trajectory_paths"]) == 24
+    assert len(started["scene"]["trajectory_scores"]) == 24
+    assert len(started["scene"]["trajectory_safe"]) == 24
+    assert started["scene"]["trajectory_goal"] == pytest.approx([2.0, 0.0, 0.0])
+    assert "paths" not in evaluation
+    slam_runtime.stop_slam()
 
 
 def test_dynamic_stage_publishes_scene_motion_and_excludes_it_from_map(monkeypatch):

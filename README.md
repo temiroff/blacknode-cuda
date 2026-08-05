@@ -76,8 +76,8 @@ for the complete wiring.
 `WarpDynamicOccupancy` is a graph-visible motion-analysis stage for `SLAM`.
 Connect its `stage` output to `SLAM.dynamic_occupancy`; the managed session
 compares consecutive pose-registered scans using a Warp `HashGrid`, keeps fixed
-returns in the cyan map, and overlays moving returns with amber-to-magenta
-velocity trails. The viewer reports query count, moving returns, synchronized
+returns in the cyan map, and overlays coherent motion as orange points. The
+viewer reports query count, moving returns, synchronized
 HashGrid pipeline time, mean speed, and an optional same-workload CPU
 comparison. Motion is evaluated against a held temporal reference so slow
 movement accumulates above sensor jitter, unmatched returns remain transient
@@ -87,6 +87,15 @@ from the map. A Warp coherence pass rejects isolated edge flicker, and only
 confirmed-static returns can influence scan matching so a moving foreground
 object cannot drag the fixed walls. The viewer marks coherent motion with
 orange points only. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
+
+`WarpTrajectoryEvaluator` is a graph-visible, visualization-only planning stage
+for `SLAM`. Connect its `stage` output to `SLAM.trajectory_evaluation`; the
+managed session scores thousands of bounded differential-drive arcs against
+the fixed occupancy map and predicted coherent motion. The viewer draws unsafe
+paths red, safe paths green, the highest-scoring safe candidate cyan, and
+reports trajectories × future steps plus synchronized Warp pipeline time. The
+stage never arms or commands the robot. Open **ROS2 Warp Navigation Lab** for
+the complete wiring.
 
 ## Included workflows
 
@@ -99,6 +108,8 @@ orange points only. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring
   stage into live `SLAM`
 - ROS 2 scan and odometry streams through a visible `WarpDynamicOccupancy`
   stage into live `SLAM`
+- ROS 2 scan and odometry streams through visible `WarpDynamicOccupancy` and
+  `WarpTrajectoryEvaluator` stages into live `SLAM`
 
 See [Warp Sensor Compute Roadmap](SENSOR_GPU_ROADMAP.md) for the delivered
 localization and dynamic-occupancy stages plus trajectory evaluation, live

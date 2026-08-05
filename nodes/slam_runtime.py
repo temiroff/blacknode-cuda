@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - dependency diagnostics cover this path
 from . import viewer_runtime, warp_matcher, warp_viewer_runtime
 from .warp_occupancy import WarpOccupancyGrid
 from .warp_dynamic_occupancy import WarpDynamicOccupancyTracker
+from .warp_trajectory import WarpTrajectoryEvaluator
 
 
 _SESSIONS: dict[str, dict[str, Any]] = {}
@@ -556,6 +557,82 @@ def _motion_display_mask(session: dict[str, Any], point_count: int) -> Any:
     return np.zeros(point_count, dtype=bool)
 
 
+def _evaluate_trajectory_candidates(session: dict[str, Any], pose: Any) -> None:
+    """Evaluate visualization-only future arcs against the live occupancy state."""
+    stage = session.get("trajectory_evaluation")
+    if not isinstance(stage, dict) or not bool(stage.get("enabled")):
+        session["trajectory_result"] = {}
+        return
+    occupancy_grid = session.get("occupancy_grid")
+    configured = max(64, min(65_536, int(stage.get("trajectory_count") or 2_048)))
+    requested = max(64, min(65_536, int(stage.get("requested_trajectories") or configured)))
+    goal = [float(stage.get("goal_x_m") or 0.0), float(stage.get("goal_y_m") or 0.0)]
+    if occupancy_grid is None or int(getattr(occupancy_grid, "occupied_cells", 0)) <= 0:
+        session["trajectory_result"] = {
+            "state": "waiting",
+            "backend": "waiting",
+            "device": str(session.get("device") or ""),
+            "trajectory_count": 0,
+            "requested_trajectories": requested,
+            "time_steps": int(stage.get("time_steps") or 48),
+            "work_items": 0,
+            "safe_trajectories": 0,
+            "unsafe_trajectories": 0,
+            "display_trajectories": 0,
+            "pipeline_ms": 0.0,
+            "goal": [goal[0], goal[1], 0.0],
+            "commands_motion": False,
+            "paths": [],
+            "path_scores": [],
+            "path_safe": [],
+        }
+        return
+    evaluator = session.get("trajectory_evaluator")
+    if evaluator is None:
+        try:
+            evaluator = WarpTrajectoryEvaluator(device=str(session.get("device") or "cuda:0"))
+            session["trajectory_evaluator"] = evaluator
+            session["trajectory_evaluator_error"] = ""
+        except Exception as exc:
+            session["trajectory_evaluator_error"] = str(exc)
+            session["trajectory_result"] = {
+                "state": "unavailable",
+                "backend": "unavailable",
+                "device": str(session.get("device") or ""),
+                "error": str(exc),
+                "goal": [goal[0], goal[1], 0.0],
+                "commands_motion": False,
+                "paths": [],
+                "path_scores": [],
+                "path_safe": [],
+            }
+            return
+    cpu_limited = bool(str(session.get("device") or "").startswith("cpu") and configured > 512)
+    evaluated = 512 if cpu_limited else configured
+    dynamic_result = session.get("dynamic_result") if isinstance(session.get("dynamic_result"), dict) else {}
+    result = evaluator.evaluate(
+        occupancy_grid.occupied_points,
+        dynamic_result.get("points") or [],
+        dynamic_result.get("velocities") or [],
+        pose,
+        goal,
+        trajectory_count=evaluated,
+        time_steps=int(stage.get("time_steps") or 48),
+        horizon_s=float(stage.get("horizon_s") or 3.0),
+        maximum_linear_speed_mps=float(stage.get("maximum_linear_speed_mps") or 0.7),
+        maximum_angular_speed_rps=float(stage.get("maximum_angular_speed_rps") or 1.5),
+        robot_radius_m=float(stage.get("robot_radius_m") or 0.18),
+        clearance_margin_m=float(stage.get("clearance_margin_m") or 0.18),
+        display_trajectories=int(stage.get("display_trajectories") or 96),
+        compare_cpu=bool(stage.get("compare_cpu")),
+    )
+    result["requested_trajectories"] = requested
+    result["limited"] = bool(cpu_limited or evaluated != requested)
+    result["comparison_limited"] = bool(stage.get("comparison_limited"))
+    result["commands_motion"] = False
+    session["trajectory_result"] = result
+
+
 def _edge_error(first: Any, second: Any, measurement: Any) -> Any:
     predicted = _relative(first, second)
     error = predicted - measurement
@@ -860,6 +937,16 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
     dynamic_summary["trail_seconds"] = float(
         (session.get("dynamic_occupancy") or {}).get("trail_seconds") or 0.35
     )
+    trajectory_result = (
+        session.get("trajectory_result")
+        if isinstance(session.get("trajectory_result"), dict)
+        else {}
+    )
+    trajectory_summary = {
+        key: value
+        for key, value in trajectory_result.items()
+        if key not in {"paths", "path_scores", "path_safe"}
+    }
     motion_mask = _motion_display_mask(session, len(current_world))
     current_nonmoving_world = current_world[~motion_mask]
     return {
@@ -883,6 +970,11 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "dynamic_points": dynamic_result.get("points") or [],
         "dynamic_velocities": dynamic_result.get("velocities") or [],
         "dynamic_scores": dynamic_result.get("scores") or [],
+        "trajectory_paths": trajectory_result.get("paths") or [],
+        "trajectory_scores": trajectory_result.get("path_scores") or [],
+        "trajectory_safe": trajectory_result.get("path_safe") or [],
+        "trajectory_best_index": int(trajectory_result.get("best_display_index") or 0),
+        "trajectory_goal": trajectory_result.get("goal") or [],
         "point_count": len(map_points),
         "current_point_count": len(current_world),
         "accumulated_scan_count": len(keyframes),
@@ -954,6 +1046,7 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         },
         "localization": particle_summary,
         "dynamic_occupancy": dynamic_summary,
+        "trajectory_evaluation": trajectory_summary,
         "animation": {
             "enabled": bool(session["options"].get("animate_scan", True)),
             "show_rays": bool(session["options"].get("show_rays", True)),
@@ -1337,6 +1430,7 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         # through a fixed frame after Clear while the visible map stays empty.
         session["tracking_reference_points"] = _transform_points(local_points, pose)
     _evaluate_particle_localization(session, local_points, pose, scan_time_ns)
+    _evaluate_trajectory_candidates(session, pose)
     scene = _scene(session, scan, local_points, float(processed.get("kernel_ms") or 0.0))
     session.update(
         live=True,
@@ -1466,6 +1560,7 @@ def start_slam(
     options: dict[str, Any],
     particle_localization: dict[str, Any] | None = None,
     dynamic_occupancy: dict[str, Any] | None = None,
+    trajectory_evaluation: dict[str, Any] | None = None,
     source_reader: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
@@ -1504,6 +1599,10 @@ def start_slam(
         "dynamic_result": {},
         "dynamic_tracker": None,
         "dynamic_tracker_error": "",
+        "trajectory_evaluation": dict(trajectory_evaluation or {}),
+        "trajectory_result": {},
+        "trajectory_evaluator": None,
+        "trajectory_evaluator_error": "",
         "running": True,
         "live": False,
         "mapping_paused": False,
@@ -1607,6 +1706,11 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             dynamic_points=[],
             dynamic_velocities=[],
             dynamic_scores=[],
+            trajectory_paths=[],
+            trajectory_scores=[],
+            trajectory_safe=[],
+            trajectory_best_index=0,
+            trajectory_goal=[],
             point_count=0,
             floor_point_count=0,
             floor_display_count=0,
@@ -1635,6 +1739,16 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
                 "dynamic_points": 0,
                 "display_points": 0,
                 "pipeline_ms": 0.0,
+            },
+            trajectory_evaluation={
+                "state": "waiting",
+                "backend": "waiting",
+                "trajectory_count": 0,
+                "safe_trajectories": 0,
+                "unsafe_trajectories": 0,
+                "display_trajectories": 0,
+                "pipeline_ms": 0.0,
+                "commands_motion": False,
             },
             history_paused=True,
         )
@@ -1665,6 +1779,7 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             tracking_correction_limited=False,
             particle_result={},
             dynamic_result={},
+            trajectory_result={},
             loop_closures=0, last_loop_score=0.0, map_limited=False,
             scene=scene, native={},
             report="SLAM map cleared; mapping is off",
