@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover - dependency diagnostics cover this path
 
 from . import viewer_runtime, warp_matcher, warp_viewer_runtime
 from .warp_occupancy import WarpOccupancyGrid
+from .warp_dynamic_occupancy import WarpDynamicOccupancyTracker
 
 
 _SESSIONS: dict[str, dict[str, Any]] = {}
@@ -493,6 +494,47 @@ def _evaluate_particle_localization(
     }
 
 
+def _evaluate_dynamic_occupancy(
+    session: dict[str, Any],
+    world_points: Any,
+    scan_time_ns: int,
+) -> None:
+    stage = session.get("dynamic_occupancy")
+    if not isinstance(stage, dict) or not bool(stage.get("enabled")):
+        session["dynamic_result"] = {}
+        return
+    tracker = session.get("dynamic_tracker")
+    if tracker is None:
+        try:
+            tracker = WarpDynamicOccupancyTracker(
+                device=str(session.get("device") or "cuda:0"),
+                maximum_points=int(stage.get("maximum_points") or 65_536),
+            )
+            session["dynamic_tracker"] = tracker
+            session["dynamic_tracker_error"] = ""
+        except Exception as exc:
+            session["dynamic_tracker_error"] = str(exc)
+            session["dynamic_result"] = {
+                "state": "unavailable",
+                "backend": "unavailable",
+                "error": str(exc),
+                "points": [],
+                "velocities": [],
+                "scores": [],
+            }
+            return
+    session["dynamic_result"] = tracker.update(
+        world_points,
+        scan_time_ns,
+        stable_radius_m=float(stage.get("stable_radius_m") or 0.08),
+        tracking_radius_m=float(stage.get("tracking_radius_m") or 0.45),
+        minimum_speed_mps=float(stage.get("minimum_speed_mps") or 0.12),
+        maximum_age_s=float(stage.get("maximum_age_s") or 0.5),
+        display_points=int(stage.get("display_points") or 1_500),
+        compare_cpu=bool(stage.get("compare_cpu")),
+    )
+
+
 def _edge_error(first: Any, second: Any, measurement: Any) -> Any:
     predicted = _relative(first, second)
     error = predicted - measurement
@@ -784,6 +826,19 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         for key, value in particle_result.items()
         if key not in {"particles", "particle_yaws", "particle_scores"}
     }
+    dynamic_result = (
+        session.get("dynamic_result")
+        if isinstance(session.get("dynamic_result"), dict)
+        else {}
+    )
+    dynamic_summary = {
+        key: value
+        for key, value in dynamic_result.items()
+        if key not in {"_dynamic_mask", "points", "velocities", "scores"}
+    }
+    dynamic_summary["trail_seconds"] = float(
+        (session.get("dynamic_occupancy") or {}).get("trail_seconds") or 0.35
+    )
     return {
         "kind": "blacknode.viewer-scene",
         "schema_version": 1,
@@ -802,6 +857,9 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "particles": particle_result.get("particles") or [],
         "particle_yaws": particle_result.get("particle_yaws") or [],
         "particle_scores": particle_result.get("particle_scores") or [],
+        "dynamic_points": dynamic_result.get("points") or [],
+        "dynamic_velocities": dynamic_result.get("velocities") or [],
+        "dynamic_scores": dynamic_result.get("scores") or [],
         "point_count": len(map_points),
         "current_point_count": len(current_world),
         "accumulated_scan_count": len(keyframes),
@@ -871,6 +929,7 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
             "map_limited": bool(session.get("map_limited")),
         },
         "localization": particle_summary,
+        "dynamic_occupancy": dynamic_summary,
         "animation": {
             "enabled": bool(session["options"].get("animate_scan", True)),
             "show_rays": bool(session["options"].get("show_rays", True)),
@@ -1047,10 +1106,23 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
             pose_value if pose_value is not None else [0.0, 0.0, 0.0],
             dtype=np.float64,
         )
+        _evaluate_dynamic_occupancy(
+            session,
+            _transform_points(local_points, pose),
+            scan_time_ns,
+        )
+        dynamic_mask = (session.get("dynamic_result") or {}).get("_dynamic_mask")
+        occupancy_points = local_points
+        if (
+            isinstance(dynamic_mask, np.ndarray)
+            and dynamic_mask.dtype == bool
+            and len(dynamic_mask) == len(local_points)
+        ):
+            occupancy_points = local_points[~dynamic_mask]
         if not session.get("mapping_paused"):
             _update_occupancy(
                 session,
-                local_points,
+                occupancy_points,
                 pose,
                 float(scan.get("angle_increment") or 0.0),
             )
@@ -1194,6 +1266,19 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         session["last_odometry"] = odometry
         if odometry_sample_time_ns > 0:
             session["last_odometry_sample_time_ns"] = odometry_sample_time_ns
+    _evaluate_dynamic_occupancy(
+        session,
+        _transform_points(local_points, pose),
+        scan_time_ns,
+    )
+    dynamic_mask = (session.get("dynamic_result") or {}).get("_dynamic_mask")
+    mapping_points = local_points
+    if (
+        isinstance(dynamic_mask, np.ndarray)
+        and dynamic_mask.dtype == bool
+        and len(dynamic_mask) == len(local_points)
+    ):
+        mapping_points = local_points[~dynamic_mask]
     should_add_keyframe = (
         not session.get("mapping_paused")
         and _should_add_keyframe(session, pose, scan_time_ns)
@@ -1205,14 +1290,14 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
     map_update_rejected = bool(should_add_keyframe and not mapping_score_accepted)
     session["map_update_rejected"] = map_update_rejected
     if should_add_keyframe and mapping_score_accepted:
-        _add_keyframe(session, local_points, pose, scan_time_ns, score)
+        _add_keyframe(session, mapping_points, pose, scan_time_ns, score)
         if session.get("keyframes"):
             pose = np.asarray(session["keyframes"][-1]["pose"], dtype=np.float64)
             session["pose"] = pose
     if not session.get("mapping_paused") and tracking_accepted:
         _update_occupancy(
             session,
-            local_points,
+            mapping_points,
             pose,
             float(scan.get("angle_increment") or 0.0),
         )
@@ -1354,6 +1439,7 @@ def start_slam(
     device: str,
     options: dict[str, Any],
     particle_localization: dict[str, Any] | None = None,
+    dynamic_occupancy: dict[str, Any] | None = None,
     source_reader: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     clean_id = _safe_id(slam_id)
@@ -1388,6 +1474,10 @@ def start_slam(
         "options": dict(options),
         "particle_localization": dict(particle_localization or {}),
         "particle_result": {},
+        "dynamic_occupancy": dict(dynamic_occupancy or {}),
+        "dynamic_result": {},
+        "dynamic_tracker": None,
+        "dynamic_tracker_error": "",
         "running": True,
         "live": False,
         "mapping_paused": False,
@@ -1487,6 +1577,9 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             particles=[],
             particle_yaws=[],
             particle_scores=[],
+            dynamic_points=[],
+            dynamic_velocities=[],
+            dynamic_scores=[],
             point_count=0,
             floor_point_count=0,
             floor_display_count=0,
@@ -1509,6 +1602,13 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
                 "work_items": 0,
                 "pipeline_ms": 0.0,
             },
+            dynamic_occupancy={
+                "state": "warming",
+                "backend": "warp-hash-grid",
+                "dynamic_points": 0,
+                "display_points": 0,
+                "pipeline_ms": 0.0,
+            },
             history_paused=True,
         )
         scene_slam = dict(scene.get("slam") or {})
@@ -1527,6 +1627,9 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
         if occupancy_grid is not None:
             occupancy_grid.clear()
             scene["occupancy"] = occupancy_grid.snapshot()
+        dynamic_tracker = session.get("dynamic_tracker")
+        if dynamic_tracker is not None:
+            dynamic_tracker.clear()
         session.update(
             mapping_paused=True,
             keyframes=[], edges=[], map_points=np.empty((0, 3), dtype=np.float32),
@@ -1534,6 +1637,7 @@ def clear_slam(slam_id: str) -> dict[str, Any]:
             prior_match_score=0.0, scan_motion_override=False,
             tracking_correction_limited=False,
             particle_result={},
+            dynamic_result={},
             loop_closures=0, last_loop_score=0.0, map_limited=False,
             scene=scene, native={},
             report="SLAM map cleared; mapping is off",

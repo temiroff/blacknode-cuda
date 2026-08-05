@@ -56,7 +56,7 @@ npm run build:slam-viewer
 | `capability` | On | `GPUCapability`, `GPURequirement` |
 | `image-processing` | On | `CUDAImageFilter`, `CUDAImageFilterStream` |
 | `tensor-operations` | On | `TensorCoreGEMM`, `CUTLASS` |
-| `spatial-processing` | On | `Viewer`, `SLAM`, `WarpLaserScanFilter` |
+| `spatial-processing` | On | `Viewer`, `SLAM`, `WarpParticleLocalization`, `WarpDynamicOccupancy`, `WarpLaserScanFilter` |
 | `benchmarks` | Off | `CUTLASSGemm` |
 
 `CUDAImageFilter` processes one image per cook. `CUDAImageFilterStream` manages a live MJPEG filter service. `Viewer` connects to a scan stream and optional pose streams, processes LaserScan messages with Warp, and renders in the editor or a native OpenGL window. Fresh `Odometry` and `PoseStamped` messages register scan history directly. A `TFMessage` stream can chain `pose_parent_frame` to `pose_child_frame`; `auto` targets the LaserScan frame. Connect `/tf_static` through a second generic ROS2 stream with `qos=transient_local` when fixed links are separate. The view provides 3D orbit controls, a counterclockwise ray sweep, reported angular coverage, bounded history, and an accumulation toggle; Off freezes the registered world cloud while the latest sweep remains visible on top. LaserScan geometry remains planar. Older specialized viewer types remain available for saved workflows but are hidden from new graphs.
@@ -73,6 +73,14 @@ comparison. Phase-one pipeline timing includes hypothesis upload, Warp scoring,
 synchronization, and score readback. Open **ROS2 Warp Particle Localization**
 for the complete wiring.
 
+`WarpDynamicOccupancy` is a graph-visible motion-analysis stage for `SLAM`.
+Connect its `stage` output to `SLAM.dynamic_occupancy`; the managed session
+compares consecutive pose-registered scans using a Warp `HashGrid`, keeps fixed
+returns in the cyan map, and overlays moving returns with amber-to-magenta
+velocity trails. The viewer reports query count, moving returns, synchronized
+HashGrid pipeline time, mean speed, and an optional same-workload CPU
+comparison. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
+
 ## Included workflows
 
 - GPU image filtering and live filter streaming
@@ -82,10 +90,12 @@ for the complete wiring.
 - ROS 2 scan and odometry streams to live `SLAM`
 - ROS 2 scan and odometry streams through a visible `WarpParticleLocalization`
   stage into live `SLAM`
+- ROS 2 scan and odometry streams through a visible `WarpDynamicOccupancy`
+  stage into live `SLAM`
 
-See [Warp Sensor Compute Roadmap](SENSOR_GPU_ROADMAP.md) for the staged dynamic
-occupancy, trajectory evaluation, live depth projection, RGB-D reconstruction,
-and LiDAR/camera fusion plan.
+See [Warp Sensor Compute Roadmap](SENSOR_GPU_ROADMAP.md) for the delivered
+localization and dynamic-occupancy stages plus trajectory evaluation, live
+depth projection, RGB-D reconstruction, and LiDAR/camera fusion phases.
 
 Select `cpu` for portable Warp verification or `cuda:0` for GPU execution. Enable `compare_numpy` when a warmed correctness and timing comparison is needed. Benchmarks report the device, data shape/type, warmup conditions, synchronized timing, and correctness result.
 

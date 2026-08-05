@@ -78,3 +78,70 @@ def warp_particle_localization(ctx: dict) -> dict:
             + ("; CPU comparison bounded to 4,096 equal-work hypotheses" if comparison_limited else "")
         ),
     }
+
+
+@node(
+    name="WarpDynamicOccupancy",
+    component="spatial-processing",
+    category=_CATEGORY,
+    description=(
+        "Configure Warp hash-grid motion classification for a managed SLAM "
+        "session. Connect stage to SLAM.dynamic_occupancy; registered scans, "
+        "device buffers, velocity estimation, and rendering stay in one live owner."
+    ),
+    inputs={
+        "enabled": Bool(default=True),
+        "stable_radius_m": Float(default=0.08),
+        "tracking_radius_m": Float(default=0.45),
+        "minimum_speed_mps": Float(default=0.12),
+        "maximum_age_s": Float(default=0.5),
+        "maximum_points": Int(default=65_536),
+        "display_points": Int(default=1_500),
+        "trail_seconds": Float(default=0.35),
+        "compare_cpu": Bool(default=False),
+    },
+    outputs={
+        "stage": Dict,
+        "enabled": Bool,
+        "workload": Text,
+        "report": Text,
+    },
+    primary_inputs=["enabled", "stable_radius_m", "tracking_radius_m", "minimum_speed_mps"],
+    primary_outputs=["stage", "report"],
+)
+def warp_dynamic_occupancy(ctx: dict) -> dict:
+    enabled = bool(ctx.get("enabled", True))
+    stable_radius_m = max(0.01, min(1.0, float(ctx.get("stable_radius_m") or 0.08)))
+    tracking_radius_m = max(
+        stable_radius_m + 0.01,
+        min(5.0, float(ctx.get("tracking_radius_m") or 0.45)),
+    )
+    minimum_speed_mps = max(0.0, min(20.0, float(ctx.get("minimum_speed_mps") or 0.12)))
+    maximum_age_s = max(0.05, min(5.0, float(ctx.get("maximum_age_s") or 0.5)))
+    maximum_points = max(64, min(65_536, int(ctx.get("maximum_points") or 65_536)))
+    display_points = max(16, min(4_000, maximum_points, int(ctx.get("display_points") or 1_500)))
+    trail_seconds = max(0.05, min(2.0, float(ctx.get("trail_seconds") or 0.35)))
+    stage = {
+        "kind": "blacknode.warp-dynamic-occupancy",
+        "schema_version": 1,
+        "enabled": enabled,
+        "stable_radius_m": stable_radius_m,
+        "tracking_radius_m": tracking_radius_m,
+        "minimum_speed_mps": minimum_speed_mps,
+        "maximum_age_s": maximum_age_s,
+        "maximum_points": maximum_points,
+        "display_points": display_points,
+        "trail_seconds": trail_seconds,
+        "compare_cpu": bool(ctx.get("compare_cpu", False)),
+    }
+    state = "enabled" if enabled else "disabled"
+    return {
+        "stage": stage,
+        "enabled": enabled,
+        "workload": f"up to {maximum_points:,} registered returns per fresh scan",
+        "report": (
+            f"Warp dynamic occupancy {state}: stable ≤{stable_radius_m:.2f} m, "
+            f"track ≤{tracking_radius_m:.2f} m, moving ≥{minimum_speed_mps:.2f} m/s; "
+            "managed SLAM executes the HashGrid stage"
+        ),
+    }

@@ -277,6 +277,7 @@
         "source",
         "odometry",
         "particle_localization",
+        "dynamic_occupancy",
         "slam_id",
         "mode",
         "device",
@@ -352,7 +353,8 @@
         "pose_parent_frame": "Text",
         "pose_child_frame": "Text",
         "fps": "Int",
-        "particle_localization": "Dict"
+        "particle_localization": "Dict",
+        "dynamic_occupancy": "Dict"
       },
       "output_types": {
         "running": "Bool",
