@@ -44,19 +44,20 @@ Status: implemented in `WarpDynamicOccupancy`.
 - Inputs: registered LiDAR history and optional depth point cloud.
 - Work: Warp hash-grid neighbor searches, temporal residuals and velocity
   estimates.
-- Visual: fixed walls remain cyan; moving objects and velocity trails use warm
-  colors.
+- Visual: fixed walls remain cyan and coherent moving objects use orange points.
 - Node: `WarpDynamicOccupancy` stage connected to `SLAM.dynamic_occupancy`.
 - Template: `ROS2 Warp Dynamic Occupancy`.
 
 ### 3. Parallel trajectory evaluation
 
+Status: implemented in `WarpTrajectoryEvaluator`.
+
 - Inputs: occupancy/clearance field, robot state, goal and dynamic obstacles.
 - Work: evaluate thousands of bounded candidate trajectories over future time
   steps. This stage only scores trajectories; it never arms or commands motion.
 - Visual: unsafe paths red, safe paths green and the best candidate cyan.
-- Planned node: `WarpTrajectoryEvaluator`.
-- Planned template: `ROS2 Warp Navigation Lab`.
+- Node: `WarpTrajectoryEvaluator` connected to `SLAM.trajectory_evaluation`.
+- Template: `ROS2 Warp Navigation Lab`.
 
 ### 4. Live depth projection
 
