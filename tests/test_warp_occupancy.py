@@ -108,7 +108,7 @@ def test_angular_beam_footprint_widens_free_space_and_wall_with_distance():
     assert result["beam_model"] == "angular-footprint"
     assert result["angular_increment_rad"] == pytest.approx(math.radians(4.0))
     assert result["free_half_width_limit_cells"] == 4
-    assert result["wall_half_width_limit_cells"] == 3
+    assert result["wall_half_width_limit_cells"] == 2
     assert result["discontinuity_gating"] is True
 
 
@@ -134,3 +134,39 @@ def test_range_discontinuity_narrows_beam_on_object_boundary_side():
     assert len(far_free) > 0
     assert far_free[:, 1].min() >= -0.01
     assert far_free[:, 1].max() >= 0.06
+
+
+def test_transient_endpoints_trace_free_space_but_never_become_walls():
+    grid = WarpOccupancyGrid(
+        device="cpu",
+        resolution_m=0.1,
+        radius_m=2.0,
+        center_xy=(0.0, 0.0),
+    )
+    hit = np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+    for _ in range(8):
+        result = grid.update(hit, (0.0, 0.0), endpoint_mask=np.asarray([False]))
+
+    assert result["free_cells"] > 0
+    assert result["occupied_cells"] == 0
+
+
+def test_free_rays_remove_stale_occupied_endpoints():
+    grid = WarpOccupancyGrid(
+        device="cpu",
+        resolution_m=0.1,
+        radius_m=2.0,
+        center_xy=(0.0, 0.0),
+    )
+    near_hit = np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+    far_hit = np.asarray([[1.6, 0.0, 0.0]], dtype=np.float32)
+    for _ in range(8):
+        grid.update(near_hit, (0.0, 0.0))
+    assert np.any(np.linalg.norm(grid.occupied_points[:, :2] - [1.05, 0.05], axis=1) < 0.08)
+
+    for _ in range(8):
+        result = grid.update(far_hit, (0.0, 0.0))
+
+    assert not np.any(np.linalg.norm(grid.occupied_points[:, :2] - [1.05, 0.05], axis=1) < 0.08)
+    assert result["evidence_model"] == "bounded-inverse-sensor"

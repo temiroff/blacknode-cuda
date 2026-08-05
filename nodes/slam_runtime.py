@@ -526,13 +526,25 @@ def _evaluate_dynamic_occupancy(
     session["dynamic_result"] = tracker.update(
         world_points,
         scan_time_ns,
-        stable_radius_m=float(stage.get("stable_radius_m") or 0.08),
-        tracking_radius_m=float(stage.get("tracking_radius_m") or 0.45),
-        minimum_speed_mps=float(stage.get("minimum_speed_mps") or 0.12),
-        maximum_age_s=float(stage.get("maximum_age_s") or 0.5),
+        stable_radius_m=float(stage.get("stable_radius_m") or 0.04),
+        tracking_radius_m=float(stage.get("tracking_radius_m") or 0.35),
+        minimum_speed_mps=float(stage.get("minimum_speed_mps") or 0.04),
+        maximum_age_s=float(stage.get("maximum_age_s") or 0.6),
         display_points=int(stage.get("display_points") or 1_500),
         compare_cpu=bool(stage.get("compare_cpu")),
     )
+
+
+def _static_mapping_mask(session: dict[str, Any], point_count: int) -> Any:
+    """Return confirmed-static endpoints, conservatively handling warmup/errors."""
+    result = session.get("dynamic_result") if isinstance(session.get("dynamic_result"), dict) else {}
+    mask = result.get("_static_mask")
+    if isinstance(mask, np.ndarray) and mask.dtype == bool and len(mask) == point_count:
+        return mask
+    stage = session.get("dynamic_occupancy")
+    if isinstance(stage, dict) and bool(stage.get("enabled")):
+        return np.zeros(point_count, dtype=bool)
+    return np.ones(point_count, dtype=bool)
 
 
 def _edge_error(first: Any, second: Any, measurement: Any) -> Any:
@@ -834,11 +846,13 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
     dynamic_summary = {
         key: value
         for key, value in dynamic_result.items()
-        if key not in {"_dynamic_mask", "points", "velocities", "scores"}
+        if key not in {"_dynamic_mask", "_static_mask", "points", "velocities", "scores"}
     }
     dynamic_summary["trail_seconds"] = float(
         (session.get("dynamic_occupancy") or {}).get("trail_seconds") or 0.35
     )
+    static_mask = _static_mapping_mask(session, len(current_world))
+    current_static_world = current_world[static_mask]
     return {
         "kind": "blacknode.viewer-scene",
         "schema_version": 1,
@@ -848,7 +862,7 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
         "sequence": int(scan.get("source_time_ns") or 0),
         "points": display.astype(float).tolist(),
         "colors": [],
-        "current_points": current_world.astype(float).tolist(),
+        "current_points": current_static_world.astype(float).tolist(),
         "current_colors": [],
         "floor_points": [],
         "floor_colors": [],
@@ -948,8 +962,9 @@ def _update_occupancy(
     local_points: Any,
     pose: Any,
     angular_increment_rad: float = 0.0,
+    static_mask: Any | None = None,
 ) -> None:
-    """Trace all real returns into a fixed map grid using Warp kernels."""
+    """Trace every real ray, but retain only confirmed-static endpoints."""
     options = session["options"]
     current_world = _transform_points(local_points, pose)
     occupancy_grid = session.get("occupancy_grid")
@@ -966,6 +981,7 @@ def _update_occupancy(
         current_world,
         (float(pose[0]), float(pose[1])),
         angular_increment_rad=angular_increment_rad,
+        endpoint_mask=static_mask,
     )
 
 
@@ -1111,20 +1127,14 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
             _transform_points(local_points, pose),
             scan_time_ns,
         )
-        dynamic_mask = (session.get("dynamic_result") or {}).get("_dynamic_mask")
-        occupancy_points = local_points
-        if (
-            isinstance(dynamic_mask, np.ndarray)
-            and dynamic_mask.dtype == bool
-            and len(dynamic_mask) == len(local_points)
-        ):
-            occupancy_points = local_points[~dynamic_mask]
+        static_mask = _static_mapping_mask(session, len(local_points))
         if not session.get("mapping_paused"):
             _update_occupancy(
                 session,
-                occupancy_points,
+                local_points,
                 pose,
                 float(scan.get("angle_increment") or 0.0),
+                static_mask,
             )
         scene = _scene(
             session,
@@ -1271,16 +1281,11 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
         _transform_points(local_points, pose),
         scan_time_ns,
     )
-    dynamic_mask = (session.get("dynamic_result") or {}).get("_dynamic_mask")
-    mapping_points = local_points
-    if (
-        isinstance(dynamic_mask, np.ndarray)
-        and dynamic_mask.dtype == bool
-        and len(dynamic_mask) == len(local_points)
-    ):
-        mapping_points = local_points[~dynamic_mask]
+    static_mask = _static_mapping_mask(session, len(local_points))
+    mapping_points = local_points[static_mask]
     should_add_keyframe = (
         not session.get("mapping_paused")
+        and len(mapping_points) >= 8
         and _should_add_keyframe(session, pose, scan_time_ns)
     )
     mapping_score_accepted = (
@@ -1297,9 +1302,10 @@ def _process_scan(session: dict[str, Any], scan: dict[str, Any]) -> None:
     if not session.get("mapping_paused") and tracking_accepted:
         _update_occupancy(
             session,
-            mapping_points,
+            local_points,
             pose,
             float(scan.get("angle_increment") or 0.0),
+            static_mask,
         )
     if (
         session.get("mapping_paused")

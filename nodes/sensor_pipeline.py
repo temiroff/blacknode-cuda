@@ -91,10 +91,10 @@ def warp_particle_localization(ctx: dict) -> dict:
     ),
     inputs={
         "enabled": Bool(default=True),
-        "stable_radius_m": Float(default=0.08),
-        "tracking_radius_m": Float(default=0.45),
-        "minimum_speed_mps": Float(default=0.12),
-        "maximum_age_s": Float(default=0.5),
+        "stable_radius_m": Float(default=0.04),
+        "tracking_radius_m": Float(default=0.35),
+        "minimum_speed_mps": Float(default=0.04),
+        "maximum_age_s": Float(default=0.6),
         "maximum_points": Int(default=65_536),
         "display_points": Int(default=1_500),
         "trail_seconds": Float(default=0.35),
@@ -111,13 +111,13 @@ def warp_particle_localization(ctx: dict) -> dict:
 )
 def warp_dynamic_occupancy(ctx: dict) -> dict:
     enabled = bool(ctx.get("enabled", True))
-    stable_radius_m = max(0.01, min(1.0, float(ctx.get("stable_radius_m") or 0.08)))
+    stable_radius_m = max(0.01, min(1.0, float(ctx.get("stable_radius_m") or 0.04)))
     tracking_radius_m = max(
         stable_radius_m + 0.01,
-        min(5.0, float(ctx.get("tracking_radius_m") or 0.45)),
+        min(5.0, float(ctx.get("tracking_radius_m") or 0.35)),
     )
-    minimum_speed_mps = max(0.0, min(20.0, float(ctx.get("minimum_speed_mps") or 0.12)))
-    maximum_age_s = max(0.05, min(5.0, float(ctx.get("maximum_age_s") or 0.5)))
+    minimum_speed_mps = max(0.0, min(20.0, float(ctx.get("minimum_speed_mps") or 0.04)))
+    maximum_age_s = max(0.05, min(5.0, float(ctx.get("maximum_age_s") or 0.6)))
     maximum_points = max(64, min(65_536, int(ctx.get("maximum_points") or 65_536)))
     display_points = max(16, min(4_000, maximum_points, int(ctx.get("display_points") or 1_500)))
     trail_seconds = max(0.05, min(2.0, float(ctx.get("trail_seconds") or 0.35)))

@@ -33,6 +33,7 @@ if wp is not None:
         resolution: wp.float32,
         grid_width: wp.int32,
         grid_height: wp.int32,
+        endpoint_mask: wp.array(dtype=wp.int32),
         free_evidence: wp.array(dtype=wp.int32),
         hit_evidence: wp.array(dtype=wp.int32),
     ):
@@ -121,25 +122,49 @@ if wp is not None:
                         if column >= 0 and column < grid_width and row >= 0 and row < grid_height:
                             wp.atomic_add(free_evidence, row * grid_width + column, 1)
 
-        # Endpoints use the same angular footprint, capped at three lateral
-        # cells. This makes a continuous wall band while keeping its range
-        # thickness at one cell and respecting discontinuity side gates.
-        wall_half_width = wp.max(resolution * 0.6, distance * beam_half_width_tangent)
-        wall_half_width_cells = wp.min(wp.int32(3), wp.int32(wp.ceil(wall_half_width / resolution)))
-        for lateral_index in range(7):
-            lateral_cell = lateral_index - 3
-            if wp.abs(lateral_cell) <= wall_half_width_cells:
-                width_scale = negative_width_scale
-                if lateral_cell >= 0:
-                    width_scale = positive_width_scale
-                lateral_distance = wp.float32(lateral_cell) * resolution
-                if wp.abs(lateral_distance) <= wall_half_width * width_scale + resolution * 0.5:
-                    wall_x = hit[0] + perpendicular_x * lateral_distance
-                    wall_y = hit[1] + perpendicular_y * lateral_distance
-                    hit_column = wp.int32(wp.floor((wall_x - world_min_x) / resolution))
-                    hit_row = wp.int32(wp.floor((wall_y - world_min_y) / resolution))
-                    if hit_column >= 0 and hit_column < grid_width and hit_row >= 0 and hit_row < grid_height:
-                        wp.atomic_add(hit_evidence, hit_row * grid_width + hit_column, 1)
+        # Dynamic or not-yet-confirmed endpoints still trace free space, but
+        # never become walls. Confirmed endpoints retain a bounded cone width
+        # that grows with distance without forcing every hit three cells wide.
+        if endpoint_mask[ray] != 0:
+            wall_half_width = wp.max(resolution * wp.float32(0.35), distance * beam_half_width_tangent)
+            wall_half_width_cells = wp.min(wp.int32(2), wp.int32(wp.ceil(wall_half_width / resolution)))
+            for lateral_index in range(5):
+                lateral_cell = lateral_index - 2
+                if wp.abs(lateral_cell) <= wall_half_width_cells:
+                    width_scale = negative_width_scale
+                    if lateral_cell >= 0:
+                        width_scale = positive_width_scale
+                    lateral_distance = wp.float32(lateral_cell) * resolution
+                    if wp.abs(lateral_distance) <= wall_half_width * width_scale + resolution * wp.float32(0.35):
+                        wall_x = hit[0] + perpendicular_x * lateral_distance
+                        wall_y = hit[1] + perpendicular_y * lateral_distance
+                        hit_column = wp.int32(wp.floor((wall_x - world_min_x) / resolution))
+                        hit_row = wp.int32(wp.floor((wall_y - world_min_y) / resolution))
+                        if hit_column >= 0 and hit_column < grid_width and hit_row >= 0 and hit_row < grid_height:
+                            wp.atomic_add(hit_evidence, hit_row * grid_width + hit_column, 1)
+
+
+    @wp.kernel
+    def _integrate_evidence_kernel(
+        frame_free_evidence: wp.array(dtype=wp.int32),
+        frame_hit_evidence: wp.array(dtype=wp.int32),
+        free_evidence: wp.array(dtype=wp.int32),
+        hit_evidence: wp.array(dtype=wp.int32),
+    ):
+        """Integrate a bounded inverse sensor model so stale walls clear."""
+        cell = wp.tid()
+        free_observations = wp.min(frame_free_evidence[cell], wp.int32(3))
+        hit_observations = wp.min(frame_hit_evidence[cell], wp.int32(3))
+        free_score = free_evidence[cell]
+        hit_score = hit_evidence[cell]
+        if hit_observations > 0:
+            hit_score = wp.min(wp.int32(12), hit_score + hit_observations * 2)
+            free_score = wp.max(wp.int32(0), free_score - hit_observations * 2)
+        elif free_observations > 0:
+            free_score = wp.min(wp.int32(12), free_score + free_observations)
+            hit_score = wp.max(wp.int32(0), hit_score - free_observations * 2)
+        free_evidence[cell] = free_score
+        hit_evidence[cell] = hit_score
 
 
     @wp.kernel
@@ -215,6 +240,8 @@ class WarpOccupancyGrid:
         self.packed_count = (cell_count + 3) // 4
         self.free_evidence = wp.zeros(cell_count, dtype=wp.int32, device=self.device)
         self.hit_evidence = wp.zeros(cell_count, dtype=wp.int32, device=self.device)
+        self.frame_free_evidence = wp.zeros(cell_count, dtype=wp.int32, device=self.device)
+        self.frame_hit_evidence = wp.zeros(cell_count, dtype=wp.int32, device=self.device)
         self.cell_states = wp.zeros(cell_count, dtype=wp.uint8, device=self.device)
         self.packed_states = wp.zeros(self.packed_count, dtype=wp.uint8, device=self.device)
         self.output_count = wp.zeros(1, dtype=wp.int32, device=self.device)
@@ -284,6 +311,7 @@ class WarpOccupancyGrid:
         origin_xy: tuple[float, float],
         *,
         angular_increment_rad: float = math.radians(1.0),
+        endpoint_mask: Any | None = None,
     ) -> dict[str, Any]:
         hits_np = np.asarray(world_hits, dtype=np.float32)
         if hits_np.ndim != 2 or hits_np.shape[1] < 3 or len(hits_np) == 0:
@@ -292,8 +320,17 @@ class WarpOccupancyGrid:
         if not math.isfinite(angular_increment) or angular_increment <= 0.0:
             angular_increment = math.radians(1.0)
         beam_half_angle = min(math.radians(2.5), max(math.radians(0.1), angular_increment * 0.55))
+        mask_np = np.asarray(
+            endpoint_mask if endpoint_mask is not None else np.ones(len(hits_np), dtype=np.int32),
+            dtype=np.int32,
+        ).reshape(-1)
+        if len(mask_np) != len(hits_np):
+            raise ValueError("endpoint_mask must contain one value per hit")
         neighbor_angle = min(math.radians(8.0), max(math.radians(0.5), angular_increment * 1.75))
         hits_wp = wp.array(hits_np[:, :3], dtype=wp.vec3, device=self.device)
+        endpoint_mask_wp = wp.array(mask_np, dtype=wp.int32, device=self.device)
+        self.frame_free_evidence.zero_()
+        self.frame_hit_evidence.zero_()
         self.output_count.zero_()
         self.occupied_output_count.zero_()
         started = time.perf_counter()
@@ -308,6 +345,16 @@ class WarpOccupancyGrid:
                 max(self.resolution_m * 2.0, 0.15), 0.15,
                 self.world_min_x, self.world_min_y, self.resolution_m,
                 self.grid_width, self.grid_height,
+                endpoint_mask_wp,
+                self.frame_free_evidence, self.frame_hit_evidence,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            _integrate_evidence_kernel,
+            dim=self.cell_count,
+            inputs=[
+                self.frame_free_evidence, self.frame_hit_evidence,
                 self.free_evidence, self.hit_evidence,
             ],
             device=self.device,
@@ -349,6 +396,8 @@ class WarpOccupancyGrid:
     def clear(self) -> None:
         self.free_evidence.zero_()
         self.hit_evidence.zero_()
+        self.frame_free_evidence.zero_()
+        self.frame_hit_evidence.zero_()
         self.cell_states.zero_()
         self.packed_states.zero_()
         self.output_count.zero_()
@@ -386,8 +435,9 @@ class WarpOccupancyGrid:
             "angular_increment_rad": float(self.angular_increment_rad),
             "beam_half_angle_rad": float(self.beam_half_angle_rad),
             "free_half_width_limit_cells": 4,
-            "wall_half_width_limit_cells": 3,
+            "wall_half_width_limit_cells": 2,
             "discontinuity_gating": True,
+            "evidence_model": "bounded-inverse-sensor",
             "display_limited": bool(self.display_limited),
             "resolution_m": float(self.resolution_m),
             "world_min_x": float(self.world_min_x),

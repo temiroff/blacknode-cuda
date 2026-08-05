@@ -79,7 +79,11 @@ compares consecutive pose-registered scans using a Warp `HashGrid`, keeps fixed
 returns in the cyan map, and overlays moving returns with amber-to-magenta
 velocity trails. The viewer reports query count, moving returns, synchronized
 HashGrid pipeline time, mean speed, and an optional same-workload CPU
-comparison. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
+comparison. Motion is evaluated against a held temporal reference so slow
+movement accumulates above sensor jitter, unmatched returns remain transient
+until confirmed, and only confirmed-static endpoints contribute occupied map
+evidence. Free rays reduce bounded occupancy evidence so removed objects clear
+from the map. Open **ROS2 Warp Dynamic Occupancy** for the complete wiring.
 
 ## Included workflows
 
