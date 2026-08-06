@@ -11,11 +11,31 @@ from blacknode.pkg.blacknode_cuda import standalone_slam
 def test_packaged_slam_viewer_contains_built_application_assets():
     viewer = Path(standalone_slam.__file__).resolve().parents[1] / "viewer"
     html = (viewer / "index.html").read_text(encoding="utf-8")
+    javascript_assets = list((viewer / "assets").glob("*.js"))
+    stylesheet_assets = list((viewer / "assets").glob("*.css"))
 
     assert "Blacknode Warp SLAM" in html
     assert (viewer / "blacknode-logo-dark.png").is_file()
-    assert any((viewer / "assets").glob("*.js"))
-    assert any((viewer / "assets").glob("*.css"))
+    assert len(javascript_assets) == 1
+    assert len(stylesheet_assets) == 1
+    assert javascript_assets[0].name in html
+    assert stylesheet_assets[0].name in html
+    javascript = javascript_assets[0].read_text(encoding="utf-8")
+    # The standalone build imports the current shared role-aware editor viewer.
+    # Keep the polished SLAM presentation in the release bundle: the B robot,
+    # metric floor, animated ray sweep, and map palette all belong to the same
+    # component operators see inside the editor.
+    for marker in (
+        "viewerRole",
+        "B robot",
+        "CURRENT SCAN",
+        "active beam",
+        "fixed free-floor cells",
+        "occupied wall cells",
+        "WARP MAP",
+        "#72ff9d",
+    ):
+        assert marker in javascript
 
 
 def test_standalone_application_starts_ros_streams_and_warp_slam(monkeypatch):
