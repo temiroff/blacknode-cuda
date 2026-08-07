@@ -629,6 +629,11 @@ def viewer(ctx: dict) -> dict:
         else {}
     )
     color_source = ctx.get("color_source") if isinstance(ctx.get("color_source"), dict) else {}
+    rgb_source = ctx.get("rgb_source") if isinstance(ctx.get("rgb_source"), dict) else {}
+    ir_source = ctx.get("ir_source") if isinstance(ctx.get("ir_source"), dict) else {}
+    color_mode = str(ctx.get("color_mode") or ("rgb" if color_source else "depth")).strip().lower()
+    if color_mode not in {"depth", "rgb", "ir"}:
+        color_mode = "depth"
     lidar_source = ctx.get("lidar_source") if isinstance(ctx.get("lidar_source"), dict) else {}
     tsdf_integration = ctx.get("tsdf_integration") if isinstance(ctx.get("tsdf_integration"), dict) else {}
     surface_extraction = ctx.get("surface_extraction") if isinstance(ctx.get("surface_extraction"), dict) else {}
@@ -722,7 +727,9 @@ def viewer(ctx: dict) -> dict:
             ),
             "pose_parent_frame": str(ctx.get("pose_parent_frame") or "odom").strip(),
             "pose_child_frame": str(ctx.get("pose_child_frame") or "auto").strip(),
+            "color_mode": color_mode,
         },
+        color_sources={"rgb": rgb_source, "ir": ir_source},
         source_reader=source_reader if callable(source_reader) else None,
     )
 
@@ -761,18 +768,38 @@ def lidar_viewer(ctx: dict) -> dict:
     inputs={
         **_VIEWER_ACTION_INPUT,
         "source": Dict,
+        "color_source": Dict,
+        "rgb_source": Dict,
+        "ir_source": Dict,
+        "color_mode": Enum(["depth", "rgb", "ir"], default="depth"),
         "depth_projection": Dict,
         **_VIEWER_POSE_INPUTS,
         "viewer_id": Text(default="depth_cloud_viewer"),
         **_VIEWER_RENDER_INPUTS,
     },
     outputs=_VIEWER_OUTPUTS,
-    primary_inputs=["source", "depth_projection", "pose", "action", "mode"],
+    primary_inputs=["source", "rgb_source", "ir_source", "color_mode", "depth_projection", "pose", "action", "mode"],
     primary_outputs=["scene", "status", "report"],
     live=True,
 )
 def depth_cloud_viewer(ctx: dict) -> dict:
-    return _specialized_viewer(ctx)
+    color_mode = str(ctx.get("color_mode") or "depth").strip().lower()
+    if color_mode not in {"depth", "rgb", "ir"}:
+        color_mode = "depth"
+    rgb_source = ctx.get("rgb_source") if isinstance(ctx.get("rgb_source"), dict) else {}
+    ir_source = ctx.get("ir_source") if isinstance(ctx.get("ir_source"), dict) else {}
+    legacy_source = ctx.get("color_source") if isinstance(ctx.get("color_source"), dict) else {}
+    selected_source = {
+        "rgb": rgb_source or legacy_source,
+        "ir": ir_source or legacy_source,
+    }.get(color_mode, {})
+    return _specialized_viewer({
+        **ctx,
+        "color_source": selected_source,
+        "rgb_source": rgb_source or (legacy_source if color_mode == "rgb" else {}),
+        "ir_source": ir_source or (legacy_source if color_mode == "ir" else {}),
+        "color_mode": color_mode,
+    })
 
 
 @node(

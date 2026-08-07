@@ -93,6 +93,56 @@ def _message_payload(value: Any) -> dict[str, Any]:
     return nested if isinstance(nested, dict) else value
 
 
+def _refresh_depth_calibration(session: dict[str, Any]) -> dict[str, Any]:
+    """Resolve late CameraInfo data for a managed depth viewer session."""
+    source = dict(session.get("source") or {})
+    calibration = (
+        dict(source.get("calibration") or {})
+        if isinstance(source.get("calibration"), dict)
+        else {}
+    )
+    if _finite(calibration.get("fx")) > 0.0 and _finite(calibration.get("fy")) > 0.0:
+        return source
+    info_source = (
+        source.get("camera_info_source")
+        if isinstance(source.get("camera_info_source"), dict)
+        else {}
+    )
+    reader = session.get("source_reader")
+    if not info_source or not callable(reader):
+        return source
+    try:
+        outputs = reader(info_source)
+    except Exception:  # A later viewer update retries the managed source.
+        return source
+    envelope = outputs.get("message") if isinstance(outputs, dict) else {}
+    camera_info = _message_payload(envelope)
+    matrix = camera_info.get("k") if isinstance(camera_info.get("k"), list) else []
+    fx = _finite(matrix[0]) if len(matrix) > 0 else 0.0
+    fy = _finite(matrix[4]) if len(matrix) > 4 else 0.0
+    if fx <= 0.0 or fy <= 0.0:
+        return source
+    width = max(0, int(_finite(camera_info.get("width"))))
+    height = max(0, int(_finite(camera_info.get("height"))))
+    calibration.update({
+        "kind": "blacknode.camera-calibration",
+        "schema_version": 1,
+        "camera_model": "pinhole",
+        "width": width or int(_finite(calibration.get("width"))),
+        "height": height or int(_finite(calibration.get("height"))),
+        "fx": fx,
+        "fy": fy,
+        "cx": _finite(matrix[2]) if len(matrix) > 2 else _finite(calibration.get("cx")),
+        "cy": _finite(matrix[5]) if len(matrix) > 5 else _finite(calibration.get("cy")),
+        "distortion_model": str(camera_info.get("distortion_model") or calibration.get("distortion_model") or "none"),
+        "distortion": list(camera_info.get("d") or calibration.get("distortion") or []),
+        "ready": True,
+    })
+    source["calibration"] = calibration
+    session["source"] = source
+    return source
+
+
 def _stamp_ns(value: dict[str, Any]) -> int:
     header = value.get("header") if isinstance(value.get("header"), dict) else {}
     stamp = header.get("stamp") if isinstance(header.get("stamp"), dict) else {}
@@ -790,10 +840,15 @@ def _update_depth_session(session: dict[str, Any]) -> None:
             report="Warp depth projection is disabled",
         )
         return
-    from .warp_depth import process_depth_stream
+    from .warp_depth import WarpDepthProcessingState, process_depth_stream
+
+    processing_state = session.get("depth_processing_state")
+    if not isinstance(processing_state, WarpDepthProcessingState):
+        processing_state = WarpDepthProcessingState()
+        session["depth_processing_state"] = processing_state
 
     processed = process_depth_stream(
-        dict(session["source"]),
+        _refresh_depth_calibration(session),
         stage,
         device=session["device"],
         color_stream=(
@@ -801,6 +856,8 @@ def _update_depth_session(session: dict[str, Any]) -> None:
             if isinstance(session.get("color_source"), dict)
             else None
         ),
+        color_mode=str(session.get("color_mode") or "depth"),
+        processing_state=processing_state,
     )
     if not processed.get("ok"):
         report = processed.get("report") if isinstance(processed.get("report"), dict) else {}
@@ -1027,8 +1084,11 @@ def _update_depth_session(session: dict[str, Any]) -> None:
         },
         "points": points[::display_stride],
         "colors": colors[::display_stride],
-        "current_points": points[::display_stride],
-        "current_colors": colors[::display_stride],
+        # This scene is one live depth frame, so ``points`` already is the
+        # current cloud. Do not send and render an identical second copy.
+        "current_points": [],
+        "current_colors": [],
+        "points_are_current": True,
         "point_count": len(points),
         "current_point_count": len(points),
         "accumulated_scan_count": 1 if points else 0,
@@ -1361,6 +1421,7 @@ def start_viewer(
     mode: str,
     device: str,
     options: dict[str, Any],
+    color_sources: dict[str, dict[str, Any]] | None = None,
     source_reader: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     clean_id = _safe_id(viewer_id)
@@ -1494,6 +1555,12 @@ def start_viewer(
             "source": dict(source),
             "lidar_source": dict(lidar_source or {}),
             "color_source": dict(color_source or {}),
+            "color_sources": {
+                key: dict(value)
+                for key, value in (color_sources or {}).items()
+                if key in {"rgb", "ir"} and isinstance(value, dict)
+            },
+            "color_mode": str(options.get("color_mode") or ("rgb" if color_source else "depth")),
             "depth_projection": dict(depth_projection or {}),
             "tsdf_integration": dict(tsdf_integration or {}),
             "surface_extraction": dict(surface_extraction or {}),
@@ -1554,6 +1621,28 @@ def viewer_status(viewer_id: str) -> dict[str, Any]:
                 "viewer": {"viewer_id": clean_id, "state": "stopped"},
                 "report": "Viewer is stopped",
             }
+        # Device-mode viewers already have a managed worker refreshing their
+        # session. Status reads snapshot that worker's latest frame instead of
+        # fetching and projecting the camera frame a second time.
+        if session.get("mode") != "device":
+            _update_session(session)
+        return _viewer_outputs(session)
+
+
+def set_viewer_color_mode(viewer_id: str, color_mode: str) -> dict[str, Any]:
+    clean_id = _safe_id(viewer_id)
+    requested = str(color_mode or "depth").strip().lower()
+    if requested not in {"depth", "rgb", "ir"}:
+        raise ValueError("color mode must be depth, rgb, or ir")
+    with _LOCK:
+        session = _SESSIONS.get(clean_id)
+        if session is None:
+            return viewer_status(clean_id)
+        color_sources = session.get("color_sources") if isinstance(session.get("color_sources"), dict) else {}
+        selected = color_sources.get(requested) if requested != "depth" else {}
+        session["color_mode"] = requested
+        session["color_source"] = dict(selected) if isinstance(selected, dict) else {}
+        session.pop("source_marker", None)
         _update_session(session)
         return _viewer_outputs(session)
 
@@ -1656,7 +1745,11 @@ def runtime_status() -> dict[str, Any]:
     node_outputs: list[dict[str, Any]] = []
     with _LOCK:
         for viewer_id, session in list(_SESSIONS.items()):
-            _update_session(session)
+            # Device-mode sessions are continuously updated by
+            # ``_device_worker``. Return the cached frame so runtime status is
+            # a lightweight read instead of a second frame-processing loop.
+            if session.get("mode") != "device":
+                _update_session(session)
             node_outputs.append({
                 "node_type": "Viewer",
                 "node_id": session.get("node_id", ""),

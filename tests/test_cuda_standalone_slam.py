@@ -28,6 +28,7 @@ def test_packaged_slam_viewer_contains_built_application_assets():
     for marker in (
         "viewerRole",
         "B robot",
+        "Robot ↑",
         "CURRENT SCAN",
         "active beam",
         "fixed free-floor cells",
@@ -44,6 +45,7 @@ def test_standalone_application_starts_ros_streams_and_warp_slam(monkeypatch):
         "--device", "cuda:0",
         "--scan-topic", "/laser",
         "--odometry-topic", "/wheel_odom",
+        "--trajectories", "2048",
     ])
     calls = []
 
@@ -95,6 +97,35 @@ def test_standalone_application_starts_ros_streams_and_warp_slam(monkeypatch):
         "/laser", "/wheel_odom",
     ]
     assert stopped["running"] is False
+
+
+def test_standalone_lidar_view_starts_without_navigation_overlays(monkeypatch):
+    options = standalone_slam._parser().parse_args([])
+    captured = {}
+
+    class FakeRosRuntime:
+        @staticmethod
+        def start_topic_subscriber(**_kwargs):
+            return {"ok": True, "backend": "native"}
+
+    monkeypatch.setattr(
+        standalone_slam.StandaloneSlamApplication,
+        "_ros2_runtime",
+        staticmethod(lambda: FakeRosRuntime),
+    )
+    monkeypatch.setattr(
+        standalone_slam.slam_runtime,
+        "start_slam",
+        lambda **kwargs: captured.update(kwargs) or {
+            "running": True,
+            "status": {"state": "waiting", "error": ""},
+        },
+    )
+
+    standalone_slam.StandaloneSlamApplication(options).start()
+
+    assert options.trajectories == 0
+    assert captured["trajectory_evaluation"] == {}
 
 
 def test_standalone_viewer_serves_state_static_assets_and_controls(tmp_path):

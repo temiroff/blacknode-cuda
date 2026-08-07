@@ -56,6 +56,36 @@ def _stage(**values) -> dict:
     })["stage"]
 
 
+def _uniform_depth_stream(width: int, height: int, values: list[float], source_time_ns: int) -> dict:
+    return {
+        "kind": "blacknode.depth-stream",
+        "schema_version": 1,
+        "frame": "depth_optical",
+        "encoding": "32FC1",
+        "calibration": {
+            "kind": "blacknode.camera-calibration",
+            "schema_version": 1,
+            "width": width,
+            "height": height,
+            "fx": float(max(width, 1)),
+            "fy": float(max(height, 1)),
+            "cx": (width - 1) * 0.5,
+            "cy": (height - 1) * 0.5,
+        },
+        "frame_source": {
+            "kind": "blacknode.depth-frame-source",
+            "schema_version": 1,
+            "transport": "inline",
+            "frame": "depth_optical",
+            "width": width,
+            "height": height,
+            "encoding": "32FC1",
+            "source_time_ns": source_time_ns,
+            "depth_m": values,
+        },
+    }
+
+
 def test_depth_projector_registers_as_visible_managed_stage():
     fn = _NODE_REGISTRY["WarpDepthProjector"]
 
@@ -80,6 +110,35 @@ def test_inline_metric_depth_projects_to_forward_left_up_on_cpu():
     assert len(result["confidence"]) == 5
 
 
+def test_depth_projection_applies_selected_ir_intensity_to_points():
+    pixels = [
+        16, 16, 16,
+        32, 32, 32,
+        64, 64, 64,
+        96, 96, 96,
+        128, 128, 128,
+        255, 255, 255,
+    ]
+    result = warp_depth.process_depth_stream(
+        _depth_stream(),
+        _stage(),
+        device="cpu",
+        color_stream={
+            "kind": "blacknode.frame-stream",
+            "width": 3,
+            "height": 2,
+            "pixels_rgb": pixels,
+        },
+        color_mode="ir",
+    )
+
+    assert result["ok"] is True
+    assert result["report"]["color_mode"] == "ir"
+    assert result["report"]["color_applied"] == "ir"
+    assert result["report"]["color_registered"] is True
+    np.testing.assert_allclose(result["colors"][0], [16 / 255] * 3, atol=1.0e-6)
+
+
 def test_depth_projection_applies_calibrated_sensor_extrinsics():
     result = warp_depth.process_depth_stream(
         _depth_stream(),
@@ -89,6 +148,70 @@ def test_depth_projection_applies_calibrated_sensor_extrinsics():
 
     np.testing.assert_allclose(result["filtered_points"][0], [-0.25, 1.0, 0.75], atol=1.0e-5)
     assert result["report"]["sensor_extrinsics"]["x_m"] == 0.25
+
+
+def test_depth_cleanup_fills_small_hole_with_consistent_neighbors():
+    values = [1.0] * 9
+    values[4] = 0.0
+    result = warp_depth.process_depth_stream(
+        _uniform_depth_stream(3, 3, values, 100),
+        _stage(minimum_neighbors=4, temporal_smoothing=0.0),
+        device="cpu",
+    )
+
+    assert result["ok"] is True
+    assert result["report"]["valid_points"] == 9
+    assert result["report"]["cleanup"]["holes_filled"] == 1
+
+
+def test_temporal_cleanup_reuses_buffers_but_does_not_smear_large_motion():
+    state = warp_depth.WarpDepthProcessingState()
+    stage = _stage(
+        spatial_filter=False,
+        hole_fill=False,
+        outlier_rejection=False,
+        temporal_smoothing=0.5,
+        temporal_max_delta_m=0.08,
+    )
+    first = warp_depth.process_depth_stream(
+        _uniform_depth_stream(3, 3, [1.0] * 9, 100),
+        stage,
+        device="cpu",
+        processing_state=state,
+    )
+    stable = warp_depth.process_depth_stream(
+        _uniform_depth_stream(3, 3, [1.04] * 9, 200),
+        stage,
+        device="cpu",
+        processing_state=state,
+    )
+    moved = warp_depth.process_depth_stream(
+        _uniform_depth_stream(3, 3, [2.0] * 9, 300),
+        stage,
+        device="cpu",
+        processing_state=state,
+    )
+
+    assert first["report"]["buffers_reused"] is False
+    assert stable["report"]["buffers_reused"] is True
+    assert stable["report"]["cleanup"]["temporally_blended"] == 9
+    np.testing.assert_allclose(stable["filtered_points"][4][0], 1.02, atol=1.0e-6)
+    assert moved["report"]["cleanup"]["temporally_blended"] == 0
+    np.testing.assert_allclose(moved["filtered_points"][4][0], 2.0, atol=1.0e-6)
+
+
+def test_projection_increases_stride_before_allocating_more_than_point_budget():
+    result = warp_depth.process_depth_stream(
+        _uniform_depth_stream(20, 20, [1.0] * 400, 100),
+        _stage(maximum_points=64, downsample_stride=1),
+        device="cpu",
+    )
+
+    assert result["ok"] is True
+    assert result["report"]["requested_stride"] == 1
+    assert result["report"]["stride"] == 3
+    assert result["report"]["candidate_points"] == 49
+    assert result["report"]["display_points"] == 49
 
 
 def test_binary_metric_depth_decoder_preserves_pixels_without_json_lists():
@@ -199,6 +322,9 @@ def test_managed_viewer_renders_depth_surface_with_projection_metrics():
         assert result["scene"]["depth_projection"]["backend"] == "warp"
         assert result["scene"]["depth_projection"]["input_pixels"] == 6
         assert "metric depth points" in result["report"]
+        refreshed = viewer_runtime.viewer_status("depth-surface")
+        assert refreshed["scene"]["depth_projection"]["buffers_reused"] is True
+        assert refreshed["scene"]["depth_projection"]["duplicate_frame"] is True
     finally:
         viewer_runtime.stop_viewer()
 

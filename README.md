@@ -28,9 +28,10 @@ retains the editor controls, camera behavior, colors, robot marker, live sweep,
 floor fill, walls, and runtime metrics. `Ctrl+C` stops SLAM and the two ROS 2
 subscriptions cleanly.
 
-The standalone application enables Warp trajectory evaluation by default.
-Hold **Shift** and left-click the map to place a fixed map-frame goal; the live
-session immediately rescores its candidate paths without restarting SLAM.
+The standalone application opens as a clean LiDAR SLAM map. Navigation paths
+and their goal are opt-in: add `--trajectories 2048`, then hold **Shift** and
+left-click the map to place a fixed map-frame goal. The live session immediately
+rescores its candidate paths without restarting SLAM.
 
 Useful options:
 
@@ -38,6 +39,7 @@ Useful options:
 blacknode run slam --fullscreen
 blacknode run slam --no-open --host 0.0.0.0
 blacknode run slam --scan-topic /scan --odometry-topic /odom
+blacknode run slam --trajectories 2048
 blacknode run slam --native --device cuda:0
 ```
 
@@ -110,8 +112,13 @@ Navigation Lab** for the complete wiring.
 Connect a provider-neutral `blacknode.depth-stream` to `DepthCloudViewer.source` and the
 stage to `DepthCloudViewer.depth_projection`. The managed viewer fetches compact binary
 frames from live providers, validates depth, deprojects calibrated pixels,
-applies the configured sensor extrinsics, estimates surface normals and
-confidence, and renders the current 3D surface in the selected target frame.
+fills small holes, rejects isolated outliers, applies motion-gated temporal
+stabilization, applies the configured sensor extrinsics, estimates surface
+normals and confidence, and renders the current 3D surface in the selected
+target frame. Managed sessions retain their depth, cleanup, and sampled
+projection buffers on the selected Warp device. The projector raises its
+effective sampling stride when needed so it never allocates more candidate
+points than `maximum_points`.
 Dense depth pixels remain outside workflow JSON. Worker presence and frame
 freshness are reported separately; stale binary frames stop live presentation.
 Open **ROS2 Warp Depth Cloud** for the complete wiring.

@@ -162,6 +162,14 @@ def warp_dynamic_occupancy(ctx: dict) -> dict:
         "maximum_depth_m": Float(default=8.0),
         "downsample_stride": Int(default=2),
         "maximum_points": Int(default=50_000),
+        "spatial_filter": Bool(default=True),
+        "spatial_max_delta_m": Float(default=0.04),
+        "hole_fill": Bool(default=True),
+        "minimum_neighbors": Int(default=3),
+        "outlier_rejection": Bool(default=True),
+        "outlier_max_delta_m": Float(default=0.12),
+        "temporal_smoothing": Float(default=0.35),
+        "temporal_max_delta_m": Float(default=0.08),
         "stale_after_seconds": Float(default=2.0),
         "target_frame": Text(default="base_link"),
         "sensor_x_m": Float(default=0.0),
@@ -178,7 +186,10 @@ def warp_dynamic_occupancy(ctx: dict) -> dict:
         "workload": Text,
         "report": Text,
     },
-    primary_inputs=["enabled", "minimum_depth_m", "maximum_depth_m", "downsample_stride"],
+    primary_inputs=[
+        "enabled", "minimum_depth_m", "maximum_depth_m", "downsample_stride",
+        "temporal_smoothing",
+    ],
     primary_outputs=["stage", "report"],
 )
 def warp_depth_projector(ctx: dict) -> dict:
@@ -190,6 +201,14 @@ def warp_depth_projector(ctx: dict) -> dict:
     )
     stride = max(1, min(32, int(ctx.get("downsample_stride") or 2)))
     maximum_points = max(64, min(250_000, int(ctx.get("maximum_points") or 50_000)))
+    spatial_filter = bool(ctx.get("spatial_filter", True))
+    spatial_max_delta_m = max(0.001, min(1.0, float(ctx.get("spatial_max_delta_m", 0.04))))
+    hole_fill = bool(ctx.get("hole_fill", True))
+    minimum_neighbors = max(2, min(4, int(ctx.get("minimum_neighbors", 3))))
+    outlier_rejection = bool(ctx.get("outlier_rejection", True))
+    outlier_max_delta_m = max(0.001, min(2.0, float(ctx.get("outlier_max_delta_m", 0.12))))
+    temporal_smoothing = max(0.0, min(0.95, float(ctx.get("temporal_smoothing", 0.35))))
+    temporal_max_delta_m = max(0.001, min(2.0, float(ctx.get("temporal_max_delta_m", 0.08))))
     stage = {
         "kind": "blacknode.warp-depth-projector",
         "schema_version": 1,
@@ -198,6 +217,14 @@ def warp_depth_projector(ctx: dict) -> dict:
         "maximum_depth_m": maximum_depth_m,
         "stride": stride,
         "maximum_points": maximum_points,
+        "spatial_filter": spatial_filter,
+        "spatial_max_delta_m": spatial_max_delta_m,
+        "hole_fill": hole_fill,
+        "minimum_neighbors": minimum_neighbors,
+        "outlier_rejection": outlier_rejection,
+        "outlier_max_delta_m": outlier_max_delta_m,
+        "temporal_smoothing": temporal_smoothing,
+        "temporal_max_delta_m": temporal_max_delta_m,
         "stale_after_seconds": max(0.1, min(60.0, float(ctx.get("stale_after_seconds") or 2.0))),
         "target_frame": str(ctx.get("target_frame") or "base_link").strip() or "base_link",
         "sensor_x_m": float(ctx.get("sensor_x_m") or 0.0),
@@ -215,7 +242,8 @@ def warp_depth_projector(ctx: dict) -> dict:
         "report": (
             f"Warp depth projection {'enabled' if enabled else 'disabled'}: "
             f"{minimum_depth_m:.2f}–{maximum_depth_m:.2f} m, stride {stride}; "
-            "managed Viewer owns live binary frames and device buffers"
+            f"edge-aware cleanup and {temporal_smoothing:.2f} temporal smoothing; "
+            "managed Viewer owns live binary frames and persistent device buffers"
         ),
     }
 

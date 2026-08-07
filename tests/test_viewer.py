@@ -1,6 +1,8 @@
 """Generic live Viewer node and managed Warp session tests."""
 from __future__ import annotations
 
+import time
+
 import blacknode  # noqa: F401
 from blacknode.node import _NODE_REGISTRY
 from blacknode.pkg.blacknode_cuda import viewer_runtime
@@ -167,7 +169,7 @@ def test_viewer_registers_as_hidden_compatibility_alias():
 def test_specialized_spatial_viewers_publish_role_specific_contracts():
     expected_inputs = {
         "LiDARViewer": {"source", "pose"},
-        "DepthCloudViewer": {"source", "depth_projection"},
+        "DepthCloudViewer": {"source", "color_source", "rgb_source", "ir_source", "color_mode", "depth_projection"},
         "ReconstructionViewer": {"source", "color_source", "tsdf_integration", "surface_extraction"},
         "FusionViewer": {"source", "lidar_source", "sensor_fusion"},
         "MapViewer": {"source", "pose"},
@@ -180,6 +182,104 @@ def test_specialized_spatial_viewers_publish_role_specific_contracts():
         assert fn._bn_hidden is False
         assert inputs <= set(fn._bn_inputs)
         assert fn._bn_output_types["scene"] == "Dict"
+
+    depth_viewer = _NODE_REGISTRY["DepthCloudViewer"]
+    assert depth_viewer._bn_input_choices["color_mode"] == ["depth", "rgb", "ir"]
+
+
+def test_depth_cloud_viewer_selects_rgb_and_ir_color_sources(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        warp_points.managed_viewer_rt,
+        "start_viewer",
+        lambda **kwargs: captured.append(kwargs) or {
+            "running": True, "live": True, "scene": {}, "status": {}, "viewer": {}, "report": "started",
+        },
+    )
+    source = {"kind": "blacknode.depth-stream"}
+    projector = {"kind": "blacknode.warp-depth-projector"}
+    rgb = {"kind": "blacknode.frame-stream", "stream_id": "rgb"}
+    ir = {"kind": "blacknode.frame-stream", "stream_id": "ir"}
+
+    for mode, expected in (("depth", {}), ("rgb", rgb), ("ir", ir)):
+        _NODE_REGISTRY["DepthCloudViewer"]({
+            "action": "start",
+            "source": source,
+            "depth_projection": projector,
+            "rgb_source": rgb,
+            "ir_source": ir,
+            "color_mode": mode,
+        })
+        assert captured[-1]["color_source"] == expected
+        assert captured[-1]["color_sources"] == {"rgb": rgb, "ir": ir}
+        assert captured[-1]["options"]["color_mode"] == mode
+
+
+def test_managed_depth_viewer_switches_color_source_without_restart(monkeypatch):
+    viewer_runtime.stop_viewer()
+    observed = []
+    monkeypatch.setattr(
+        viewer_runtime,
+        "_update_session",
+        lambda session: observed.append((session["color_mode"], session["color_source"])),
+    )
+    rgb = {"kind": "blacknode.frame-stream", "stream_id": "rgb"}
+    ir = {"kind": "blacknode.frame-stream", "stream_id": "ir"}
+
+    viewer_runtime.start_viewer(
+        viewer_id="switchable-depth-cloud",
+        node_id="cloud",
+        source={"kind": "blacknode.depth-stream"},
+        lidar_source={},
+        color_source={},
+        color_sources={"rgb": rgb, "ir": ir},
+        depth_projection={"kind": "blacknode.warp-depth-projector"},
+        tsdf_integration={},
+        surface_extraction={},
+        sensor_fusion={},
+        pose_source={},
+        pose_static_source={},
+        mode="editor",
+        device="cuda:0",
+        options={"color_mode": "depth"},
+    )
+    result = viewer_runtime.set_viewer_color_mode("switchable-depth-cloud", "ir")
+
+    assert result["running"] is True
+    assert observed == [("depth", {}), ("ir", ir)]
+    viewer_runtime.stop_viewer("switchable-depth-cloud")
+
+
+def test_managed_depth_viewer_refreshes_late_camera_info():
+    info_source = {
+        "kind": "blacknode.message-stream",
+        "protocol": "ros2",
+        "topic": "/camera/depth/camera_info",
+    }
+    session = {
+        "source": {
+            "kind": "blacknode.depth-stream",
+            "calibration": {"fx": 0.0, "fy": 0.0},
+            "camera_info_source": info_source,
+        },
+        "source_reader": lambda source: {
+            "message": {
+                "width": 640,
+                "height": 400,
+                "k": [422.0, 0.0, 319.0, 0.0, 423.0, 198.0, 0.0, 0.0, 1.0],
+                "d": [0.1, 0.0, 0.0, 0.0, 0.0],
+                "distortion_model": "plumb_bob",
+            }
+        } if source is info_source else {},
+    }
+
+    refreshed = viewer_runtime._refresh_depth_calibration(session)
+
+    assert refreshed["calibration"]["ready"] is True
+    assert refreshed["calibration"]["fx"] == 422.0
+    assert refreshed["calibration"]["fy"] == 423.0
+    assert refreshed["calibration"]["cx"] == 319.0
+    assert session["source"] == refreshed
 
 
 def test_editor_viewer_normalizes_stream_and_publishes_live_scene(monkeypatch):
@@ -397,7 +497,10 @@ def test_device_viewer_updates_native_worker_from_new_scans(monkeypatch):
         lambda viewer_id="": calls.append(("stop", viewer_id)) or {"ok": True, "stopped": 1},
     )
 
+    reads = {"count": 0}
+
     def reader(_source_value):
+        reads["count"] += 1
         return _outputs(state["received"])
 
     started = _NODE_REGISTRY["Viewer"]({
@@ -410,11 +513,27 @@ def test_device_viewer_updates_native_worker_from_new_scans(monkeypatch):
         "__message_stream_reader__": reader,
     })
     state["received"] = 2
+    deadline = time.monotonic() + 1.0
     status = viewer_runtime.viewer_status("device-scan")
+    while status["scene"]["sequence"] != 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+        status = viewer_runtime.viewer_status("device-scan")
+
+    # Stop only the worker so both status entry points can be verified as
+    # cached reads while the session remains registered.
+    session = viewer_runtime._SESSIONS["device-scan"]
+    session["stop_event"].set()
+    session["worker"].join(timeout=1.0)
+    reads_before_status = reads["count"]
+    status = viewer_runtime.viewer_status("device-scan")
+    runtime = viewer_runtime.runtime_status()
+    reads_after_status = reads["count"]
     stopped = _NODE_REGISTRY["Viewer"]({"action": "stop", "viewer_id": "device-scan"})
 
     assert started["live"] is True
     assert status["scene"]["sequence"] == 2
+    assert runtime["node_outputs"][0]["outputs"]["scene"]["sequence"] == 2
+    assert reads_after_status == reads_before_status
     assert [item[0] for item in calls] == ["start", "update", "stop"]
     assert stopped["running"] is False
 

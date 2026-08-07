@@ -1014,6 +1014,9 @@ def _scene(session: dict[str, Any], scan: dict[str, Any], current_points: Any, k
             "yaw_rad": float(current_pose[2]),
         },
         "robot": {
+            "x_m": float(current_pose[0]),
+            "y_m": float(current_pose[1]),
+            "yaw_rad": float(current_pose[2]),
             "length_m": float(session["options"].get("robot_length_m") or 0.25),
             "width_m": float(session["options"].get("robot_width_m") or 0.22),
             "height_m": float(session["options"].get("robot_height_m") or 0.08),
