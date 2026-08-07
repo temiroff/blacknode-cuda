@@ -101,16 +101,11 @@ class StandaloneSlamApplication:
                 "occupancy_radius_m": self.options.occupancy_radius,
                 "fps": self.options.fps,
             }
-            trajectory_count = max(64, min(65_536, int(self.options.trajectories)))
-            started = slam_runtime.start_slam(
-                slam_id=self.slam_id,
-                node_id="standalone-slam",
-                source=_stream(self.options.scan_topic, "sensor_msgs/msg/LaserScan"),
-                odometry_source=odometry_source,
-                mode="device" if self.options.native else "editor",
-                device=self.options.device,
-                options=slam_options(values),
-                trajectory_evaluation={
+            trajectory_count = max(0, min(65_536, int(self.options.trajectories)))
+            trajectory_evaluation = {}
+            if trajectory_count:
+                trajectory_count = max(64, trajectory_count)
+                trajectory_evaluation = {
                     "kind": "blacknode.warp-trajectory-evaluator",
                     "schema_version": 1,
                     "enabled": True,
@@ -128,7 +123,16 @@ class StandaloneSlamApplication:
                     "compare_cpu": False,
                     "comparison_limited": False,
                     "commands_motion": False,
-                },
+                }
+            started = slam_runtime.start_slam(
+                slam_id=self.slam_id,
+                node_id="standalone-slam",
+                source=_stream(self.options.scan_topic, "sensor_msgs/msg/LaserScan"),
+                odometry_source=odometry_source,
+                mode="device" if self.options.native else "editor",
+                device=self.options.device,
+                options=slam_options(values),
+                trajectory_evaluation=trajectory_evaluation,
             )
             status = started.get("status") if isinstance(started.get("status"), dict) else {}
             self.last_error = str(status.get("error") or "") if status.get("state") == "error" else ""
@@ -322,7 +326,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sensor-yaw", type=float, default=0.0)
     parser.add_argument("--goal-x", type=float, default=3.0, help="initial map-frame trajectory goal X in metres")
     parser.add_argument("--goal-y", type=float, default=0.0, help="initial map-frame trajectory goal Y in metres")
-    parser.add_argument("--trajectories", type=int, default=2_048, help="parallel candidate trajectories per scan")
+    parser.add_argument(
+        "--trajectories", type=int, default=0,
+        help="parallel candidate trajectories per scan; 0 keeps navigation overlays off",
+    )
     parser.add_argument("--fps", type=int, default=30)
     return parser
 

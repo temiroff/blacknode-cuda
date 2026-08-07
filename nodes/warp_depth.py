@@ -33,6 +33,109 @@ _MAX_FRAME_BYTES = 256 * 1024 * 1024
 if wp is not None:
 
     @wp.kernel
+    def _cleanup_depth_kernel(
+        depth_m: wp.array(dtype=wp.float32),
+        previous_depth_m: wp.array(dtype=wp.float32),
+        width: wp.int32,
+        height: wp.int32,
+        minimum_m: wp.float32,
+        maximum_m: wp.float32,
+        spatial_filter: wp.int32,
+        spatial_max_delta_m: wp.float32,
+        hole_fill: wp.int32,
+        minimum_neighbors: wp.int32,
+        outlier_rejection: wp.int32,
+        outlier_max_delta_m: wp.float32,
+        temporal_smoothing: wp.float32,
+        temporal_max_delta_m: wp.float32,
+        history_valid: wp.int32,
+        cleaned_depth_m: wp.array(dtype=wp.float32),
+        stats: wp.array(dtype=wp.int32),
+    ):
+        """Edge-aware cleanup with motion-gated temporal stabilization.
+
+        ``stats`` contains valid, hole-filled, outlier-replaced, and temporal
+        blend counts. The small counter buffer avoids copying a full-resolution
+        classification image back to the host.
+        """
+        index = wp.tid()
+        u = index % width
+        v = index // width
+        center = depth_m[index]
+        center_valid = wp.isfinite(center) and center >= minimum_m and center <= maximum_m
+
+        neighbor_sum = wp.float32(0.0)
+        neighbor_min = maximum_m
+        neighbor_max = minimum_m
+        neighbor_count = wp.int32(0)
+        if u > 0:
+            value = depth_m[index - 1]
+            if wp.isfinite(value) and value >= minimum_m and value <= maximum_m:
+                neighbor_sum += value
+                neighbor_min = wp.min(neighbor_min, value)
+                neighbor_max = wp.max(neighbor_max, value)
+                neighbor_count += 1
+        if u + 1 < width:
+            value = depth_m[index + 1]
+            if wp.isfinite(value) and value >= minimum_m and value <= maximum_m:
+                neighbor_sum += value
+                neighbor_min = wp.min(neighbor_min, value)
+                neighbor_max = wp.max(neighbor_max, value)
+                neighbor_count += 1
+        if v > 0:
+            value = depth_m[index - width]
+            if wp.isfinite(value) and value >= minimum_m and value <= maximum_m:
+                neighbor_sum += value
+                neighbor_min = wp.min(neighbor_min, value)
+                neighbor_max = wp.max(neighbor_max, value)
+                neighbor_count += 1
+        if v + 1 < height:
+            value = depth_m[index + width]
+            if wp.isfinite(value) and value >= minimum_m and value <= maximum_m:
+                neighbor_sum += value
+                neighbor_min = wp.min(neighbor_min, value)
+                neighbor_max = wp.max(neighbor_max, value)
+                neighbor_count += 1
+
+        consensus = (
+            neighbor_count >= minimum_neighbors
+            and neighbor_max - neighbor_min <= spatial_max_delta_m
+        )
+        cleaned = center
+        if not center_valid:
+            if hole_fill != 0 and consensus:
+                cleaned = neighbor_sum / wp.float32(neighbor_count)
+                center_valid = True
+                wp.atomic_add(stats, 1, 1)
+            else:
+                cleaned_depth_m[index] = wp.float32(0.0)
+                return
+        elif outlier_rejection != 0 and consensus:
+            neighbor_mean = neighbor_sum / wp.float32(neighbor_count)
+            if wp.abs(center - neighbor_mean) > outlier_max_delta_m:
+                cleaned = neighbor_mean
+                wp.atomic_add(stats, 2, 1)
+        if spatial_filter != 0 and consensus:
+            neighbor_mean = neighbor_sum / wp.float32(neighbor_count)
+            if wp.abs(cleaned - neighbor_mean) <= spatial_max_delta_m:
+                cleaned = (cleaned + neighbor_sum) / wp.float32(neighbor_count + 1)
+
+        previous = previous_depth_m[index]
+        if (
+            history_valid != 0
+            and temporal_smoothing > 0.0
+            and wp.isfinite(previous)
+            and previous >= minimum_m
+            and previous <= maximum_m
+            and wp.abs(previous - cleaned) <= temporal_max_delta_m
+        ):
+            cleaned = cleaned * (1.0 - temporal_smoothing) + previous * temporal_smoothing
+            wp.atomic_add(stats, 3, 1)
+
+        cleaned_depth_m[index] = cleaned
+        wp.atomic_add(stats, 0, 1)
+
+    @wp.kernel
     def _project_depth_kernel(
         depth_m: wp.array(dtype=wp.float32),
         width: wp.int32,
@@ -44,6 +147,7 @@ if wp is not None:
         minimum_m: wp.float32,
         maximum_m: wp.float32,
         stride: wp.int32,
+        sample_width: wp.int32,
         sensor_x: wp.float32,
         sensor_y: wp.float32,
         sensor_z: wp.float32,
@@ -55,15 +159,17 @@ if wp is not None:
         colors: wp.array(dtype=wp.vec3),
         confidence: wp.array(dtype=wp.float32),
         valid: wp.array(dtype=wp.int32),
+        source_indices: wp.array(dtype=wp.int32),
     ):
-        index = wp.tid()
-        u = index % width
-        v = index // width
+        output_index = wp.tid()
+        u = (output_index % sample_width) * stride
+        v = (output_index // sample_width) * stride
+        if u >= width or v >= height:
+            return
+        index = v * width + u
         depth = depth_m[index]
         keep = (
-            u % stride == 0
-            and v % stride == 0
-            and depth >= minimum_m
+            depth >= minimum_m
             and depth <= maximum_m
             and wp.isfinite(depth)
         )
@@ -125,23 +231,73 @@ if wp is not None:
         r20 = -sp
         r21 = cp * sr
         r22 = cp * cr
-        points[index] = wp.vec3(
+        points[output_index] = wp.vec3(
             sensor_x + r00 * point[0] + r01 * point[1] + r02 * point[2],
             sensor_y + r10 * point[0] + r11 * point[1] + r12 * point[2],
             sensor_z + r20 * point[0] + r21 * point[1] + r22 * point[2],
         )
-        normals[index] = wp.vec3(
+        normals[output_index] = wp.vec3(
             r00 * normal[0] + r01 * normal[1] + r02 * normal[2],
             r10 * normal[0] + r11 * normal[1] + r12 * normal[2],
             r20 * normal[0] + r21 * normal[1] + r22 * normal[2],
         )
-        confidence[index] = normal_confidence
-        colors[index] = wp.vec3(
+        confidence[output_index] = normal_confidence
+        colors[output_index] = wp.vec3(
             0.05 + 0.15 * distance_fraction,
             0.85 - 0.35 * distance_fraction,
             1.0,
         ) * (0.55 + 0.45 * normal_confidence)
-        valid[index] = 1
+        valid[output_index] = 1
+        source_indices[output_index] = index
+
+
+class WarpDepthProcessingState:
+    """Reusable device buffers and temporal history for one managed camera."""
+
+    def __init__(self) -> None:
+        self.device = ""
+        self.width = 0
+        self.height = 0
+        self.sample_count = 0
+        self.depth_input = None
+        self.previous_depth = None
+        self.filtered_depth = None
+        self.points = None
+        self.normals = None
+        self.colors = None
+        self.confidence = None
+        self.valid = None
+        self.source_indices = None
+        self.stats = None
+        self.history_valid = False
+        self.filter_signature: tuple[Any, ...] | None = None
+        self.last_source_time_ns = 0
+        self.last_stats = [0, 0, 0, 0]
+        self.allocations = 0
+
+    def prepare(self, selected_device: Any, width: int, height: int, sample_count: int) -> bool:
+        key = (str(selected_device), int(width), int(height), int(sample_count))
+        current = (self.device, self.width, self.height, self.sample_count)
+        if key == current and self.depth_input is not None:
+            return True
+        pixel_count = int(width * height)
+        self.device, self.width, self.height, self.sample_count = key
+        self.depth_input = wp.zeros(pixel_count, dtype=wp.float32, device=selected_device)
+        self.previous_depth = wp.zeros(pixel_count, dtype=wp.float32, device=selected_device)
+        self.filtered_depth = wp.zeros(pixel_count, dtype=wp.float32, device=selected_device)
+        self.points = wp.zeros(sample_count, dtype=wp.vec3, device=selected_device)
+        self.normals = wp.zeros(sample_count, dtype=wp.vec3, device=selected_device)
+        self.colors = wp.zeros(sample_count, dtype=wp.vec3, device=selected_device)
+        self.confidence = wp.zeros(sample_count, dtype=wp.float32, device=selected_device)
+        self.valid = wp.zeros(sample_count, dtype=wp.int32, device=selected_device)
+        self.source_indices = wp.zeros(sample_count, dtype=wp.int32, device=selected_device)
+        self.stats = wp.zeros(4, dtype=wp.int32, device=selected_device)
+        self.history_valid = False
+        self.filter_signature = None
+        self.last_source_time_ns = 0
+        self.last_stats = [0, 0, 0, 0]
+        self.allocations += 1
+        return False
 
 
 def _error(
@@ -325,6 +481,8 @@ def process_depth_stream(
     *,
     device: str = "cuda:0",
     color_stream: dict[str, Any] | None = None,
+    color_mode: str = "rgb",
+    processing_state: WarpDepthProcessingState | None = None,
 ) -> dict[str, Any]:
     if wp is None:
         return _error("NVIDIA Warp is not installed; install warp-lang>=1.15", device=device)
@@ -356,6 +514,10 @@ def process_depth_stream(
                 state="stale",
                 worker_alive=True,
             )
+        source_time_ns = (
+            int(header.get("stamp_sec") or 0) * 1_000_000_000
+            + int(header.get("stamp_nanosec") or 0)
+        ) or int(header.get("received_at_ns") or 0)
         calibration = depth_stream.get("calibration") if isinstance(depth_stream.get("calibration"), dict) else {}
         height, width = depth.shape
         fx = float(calibration.get("fx") or 0.0)
@@ -368,59 +530,118 @@ def process_depth_stream(
             raise ValueError("depth camera calibration requires positive fx and fy")
         minimum_m = max(0.001, float(stage.get("minimum_depth_m") or 0.1))
         maximum_m = max(minimum_m, float(stage.get("maximum_depth_m") or 8.0))
-        stride = max(1, int(stage.get("stride") or 2))
+        requested_stride = max(1, int(stage.get("stride") or 2))
+        maximum_points = max(64, min(250_000, int(stage.get("maximum_points") or 50_000)))
+        stride = requested_stride
+        while math.ceil(width / stride) * math.ceil(height / stride) > maximum_points:
+            stride += 1
+        sample_width = math.ceil(width / stride)
+        sample_height = math.ceil(height / stride)
+        sample_count = int(sample_width * sample_height)
         sensor_x = float(stage.get("sensor_x_m") or 0.0)
         sensor_y = float(stage.get("sensor_y_m") or 0.0)
         sensor_z = float(stage.get("sensor_z_m") or 0.0)
         sensor_roll = float(stage.get("sensor_roll_rad") or 0.0)
         sensor_pitch = float(stage.get("sensor_pitch_rad") or 0.0)
         sensor_yaw = float(stage.get("sensor_yaw_rad") or 0.0)
+        spatial_filter = bool(stage.get("spatial_filter", True))
+        spatial_max_delta_m = max(0.001, min(1.0, float(stage.get("spatial_max_delta_m", 0.04))))
+        hole_fill = bool(stage.get("hole_fill", True))
+        minimum_neighbors = max(2, min(4, int(stage.get("minimum_neighbors", 3))))
+        outlier_rejection = bool(stage.get("outlier_rejection", True))
+        outlier_max_delta_m = max(0.001, min(2.0, float(stage.get("outlier_max_delta_m", 0.12))))
+        temporal_smoothing = max(0.0, min(0.95, float(stage.get("temporal_smoothing", 0.35))))
+        temporal_max_delta_m = max(0.001, min(2.0, float(stage.get("temporal_max_delta_m", 0.08))))
+        cleanup_enabled = spatial_filter or hole_fill or outlier_rejection or temporal_smoothing > 0.0
+        filter_signature = (
+            minimum_m, maximum_m, spatial_filter, spatial_max_delta_m, hole_fill,
+            minimum_neighbors, outlier_rejection, outlier_max_delta_m,
+            temporal_smoothing, temporal_max_delta_m,
+        )
+        state = processing_state if isinstance(processing_state, WarpDepthProcessingState) else WarpDepthProcessingState()
+        buffers_reused = state.prepare(selected_device, width, height, sample_count)
+        if state.filter_signature != filter_signature:
+            state.history_valid = False
+            state.filter_signature = filter_signature
+            state.last_source_time_ns = 0
         values = np.ascontiguousarray(depth.reshape(-1), dtype=np.float32)
-        count = int(values.size)
-        depth_wp = wp.array(values, dtype=wp.float32, device=selected_device)
-        points_wp = wp.zeros(count, dtype=wp.vec3, device=selected_device)
-        normals_wp = wp.zeros(count, dtype=wp.vec3, device=selected_device)
-        colors_wp = wp.zeros(count, dtype=wp.vec3, device=selected_device)
-        confidence_wp = wp.zeros(count, dtype=wp.float32, device=selected_device)
-        valid_wp = wp.zeros(count, dtype=wp.int32, device=selected_device)
         started = time.perf_counter()
+        state.depth_input.assign(values)
+        duplicate_frame = bool(
+            cleanup_enabled
+            and state.history_valid
+            and source_time_ns > 0
+            and source_time_ns == state.last_source_time_ns
+        )
+        if cleanup_enabled and not duplicate_frame:
+            state.stats.fill_(0)
+            wp.launch(
+                _cleanup_depth_kernel,
+                dim=int(values.size),
+                inputs=[
+                    state.depth_input, state.previous_depth, width, height,
+                    minimum_m, maximum_m, int(spatial_filter), spatial_max_delta_m,
+                    int(hole_fill), minimum_neighbors, int(outlier_rejection),
+                    outlier_max_delta_m, temporal_smoothing, temporal_max_delta_m,
+                    int(state.history_valid),
+                ],
+                outputs=[state.filtered_depth, state.stats],
+                device=selected_device,
+            )
+            cleaned_depth = state.filtered_depth
+        elif cleanup_enabled:
+            cleaned_depth = state.previous_depth
+        else:
+            cleaned_depth = state.depth_input
+        state.valid.fill_(0)
         wp.launch(
             _project_depth_kernel,
-            dim=count,
+            dim=sample_count,
             inputs=[
-                depth_wp, width, height, fx, fy, cx, cy, minimum_m, maximum_m, stride,
+                cleaned_depth, width, height, fx, fy, cx, cy, minimum_m, maximum_m,
+                stride, sample_width,
                 sensor_x, sensor_y, sensor_z, sensor_roll, sensor_pitch, sensor_yaw,
             ],
-            outputs=[points_wp, normals_wp, colors_wp, confidence_wp, valid_wp],
+            outputs=[
+                state.points, state.normals, state.colors, state.confidence,
+                state.valid, state.source_indices,
+            ],
             device=selected_device,
         )
         wp.synchronize_device(selected_device)
-        points = points_wp.numpy()
-        normals = normals_wp.numpy()
-        colors = colors_wp.numpy()
-        confidence = confidence_wp.numpy()
-        mask = valid_wp.numpy().astype(bool, copy=False)
+        if cleanup_enabled and not duplicate_frame:
+            state.last_stats = [int(value) for value in state.stats.numpy().tolist()]
+            state.previous_depth, state.filtered_depth = state.filtered_depth, state.previous_depth
+            state.history_valid = True
+            state.last_source_time_ns = source_time_ns
+        points = state.points.numpy()
+        normals = state.normals.numpy()
+        colors = state.colors.numpy()
+        confidence = state.confidence.numpy()
+        source_indices = state.source_indices.numpy()
+        mask = state.valid.numpy().astype(bool, copy=False)
         pipeline_ms = (time.perf_counter() - started) * 1000.0
         selected = np.flatnonzero(mask)
-        maximum_points = max(64, min(250_000, int(stage.get("maximum_points") or 50_000)))
-        if len(selected) > maximum_points:
-            sample = np.linspace(0, len(selected) - 1, maximum_points, dtype=np.int64)
-            selected = selected[sample]
         projected = points[selected]
         projected_normals = normals[selected]
         projected_colors = colors[selected]
+        requested_color_mode = str(color_mode or "depth").strip().lower()
+        if requested_color_mode not in {"depth", "rgb", "ir"}:
+            requested_color_mode = "depth"
         color_fetch_ms = 0.0
         color_registered = False
-        color_error = ""
-        if isinstance(color_stream, dict) and color_stream:
+        color_error = "" if requested_color_mode == "depth" else f"{requested_color_mode.upper()} source unavailable"
+        if requested_color_mode != "depth" and isinstance(color_stream, dict) and color_stream:
             try:
                 color_image, color_fetch_ms = load_color_frame(
                     color_stream,
                     width=width,
                     height=height,
                 )
-                projected_colors = color_image.reshape((-1, 3))[selected].astype(np.float32) / np.float32(255.0)
+                color_indices = source_indices[selected].astype(np.int64, copy=False)
+                projected_colors = color_image.reshape((-1, 3))[color_indices].astype(np.float32) / np.float32(255.0)
                 color_registered = True
+                color_error = ""
             except Exception as exc:
                 color_error = f"{type(exc).__name__}: {exc}"
         projected_confidence = confidence[selected]
@@ -428,8 +649,13 @@ def process_depth_stream(
         maximum_error = 0.0
         if stage.get("compare_cpu"):
             cpu_started = time.perf_counter()
+            reference_depth = (
+                state.previous_depth.numpy().reshape((height, width))
+                if cleanup_enabled
+                else depth
+            )
             cpu_points = _numpy_project(
-                depth,
+                reference_depth,
                 fx=fx,
                 fy=fy,
                 cx=cx,
@@ -453,10 +679,7 @@ def process_depth_stream(
     except Exception as exc:
         return _error(f"Warp depth projection failed ({type(exc).__name__}: {exc})", device=device)
 
-    source_time_ns = (
-        int(header.get("stamp_sec") or 0) * 1_000_000_000
-        + int(header.get("stamp_nanosec") or 0)
-    ) or int(header.get("received_at_ns") or 0)
+    cleanup_stats = state.last_stats if cleanup_enabled else [int(np.count_nonzero(mask)), 0, 0, 0]
     report = {
         "state": "ready",
         "backend": "warp",
@@ -464,9 +687,14 @@ def process_depth_stream(
         "width": width,
         "height": height,
         "input_pixels": int(width * height),
+        "candidate_points": sample_count,
         "valid_points": int(np.count_nonzero(mask)),
         "display_points": int(len(projected)),
         "stride": stride,
+        "requested_stride": requested_stride,
+        "buffers_reused": buffers_reused,
+        "buffer_allocations": state.allocations,
+        "duplicate_frame": duplicate_frame,
         "minimum_depth_m": minimum_m,
         "maximum_depth_m": maximum_m,
         "fetch_ms": float(fetch_ms),
@@ -479,6 +707,21 @@ def process_depth_stream(
         "speedup": float(cpu_ms / pipeline_ms) if cpu_ms > 0.0 and pipeline_ms > 0.0 else 0.0,
         "max_error_m": float(maximum_error),
         "mean_confidence": float(np.mean(projected_confidence)) if len(projected_confidence) else 0.0,
+        "cleanup": {
+            "enabled": cleanup_enabled,
+            "spatial_filter": spatial_filter,
+            "spatial_max_delta_m": spatial_max_delta_m,
+            "hole_fill": hole_fill,
+            "minimum_neighbors": minimum_neighbors,
+            "outlier_rejection": outlier_rejection,
+            "outlier_max_delta_m": outlier_max_delta_m,
+            "temporal_smoothing": temporal_smoothing,
+            "temporal_max_delta_m": temporal_max_delta_m,
+            "valid_pixels": int(cleanup_stats[0]),
+            "holes_filled": int(cleanup_stats[1]),
+            "outliers_replaced": int(cleanup_stats[2]),
+            "temporally_blended": int(cleanup_stats[3]),
+        },
         "target_frame": str(stage.get("target_frame") or "base_link"),
         "sensor_extrinsics": {
             "x_m": sensor_x,
@@ -491,6 +734,8 @@ def process_depth_stream(
         "encoding": str(header.get("encoding") or depth_stream.get("encoding") or ""),
         "source_time_ns": source_time_ns,
         "color_registered": color_registered,
+        "color_mode": requested_color_mode,
+        "color_applied": requested_color_mode if color_registered else "depth",
         "color_fetch_ms": float(color_fetch_ms),
         "color_source": str((color_stream or {}).get("snapshot_url") or ""),
         "color_error": color_error,

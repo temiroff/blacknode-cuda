@@ -88,7 +88,9 @@ Status: implemented in `WarpDepthProjector`.
   depth and calibration to a managed GPU consumer without JSON-expanding every
   pixel. `blacknode-perception` remains the depth-camera capability owner.
 - Inputs: depth frames, camera intrinsics and calibrated sensor extrinsics.
-- Work: depth validation, deprojection, filtering, normals and confidence.
+- Work: edge-aware validation, small-hole filling, isolated-outlier rejection,
+  motion-gated temporal stabilization, bounded sampled deprojection, normals
+  and confidence. Managed sessions reuse device buffers between frames.
 - Visual: a live metric 3D point surface using the shared viewer controls.
 - Stage: `WarpDepthProjector` connected to `Viewer.depth_projection`.
 - Template: `ROS2 Warp Depth Cloud`.

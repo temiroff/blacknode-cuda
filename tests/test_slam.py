@@ -206,6 +206,9 @@ def test_slam_node_maps_live_scans_and_pause_keeps_localization_active(monkeypat
     assert mapped["scene"]["slam"]["keyframes"] == 1
     assert mapped["map"]["point_count"] > 0
     assert mapped["scene"]["robot"] == {
+        "x_m": 0.0,
+        "y_m": 0.0,
+        "yaw_rad": 0.0,
         "length_m": 0.25,
         "width_m": 0.22,
         "height_m": 0.08,
